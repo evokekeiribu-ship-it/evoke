@@ -1,0 +1,1 @@
+require('dotenv').config(); const cp = require('child_process'); cp.exec('node -e "console.log(process.env.GOOGLE_APPLICATION_CREDENTIALS)"', (err, stdout) => console.log('NODE SEES:', stdout.trim())); cp.exec('python -c "import os; print(os.environ.get(''GOOGLE_APPLICATION_CREDENTIALS''))"', (err, stdout) => console.log('PYTHON SEES:', stdout.trim()));
