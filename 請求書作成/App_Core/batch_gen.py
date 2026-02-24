@@ -127,12 +127,16 @@ def run_ocr_on_all():
     
     creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     fallback_path = os.path.join(os.path.dirname(BASE_DIR), "google-credentials.json")
+    render_secret_path = "/etc/secrets/google-credentials.json"
     
     if creds_path and os.path.exists(creds_path):
         creds = service_account.Credentials.from_service_account_file(creds_path)
         client = vision.ImageAnnotatorClient(credentials=creds)
     elif os.path.exists(fallback_path):
         creds = service_account.Credentials.from_service_account_file(fallback_path)
+        client = vision.ImageAnnotatorClient(credentials=creds)
+    elif os.path.exists(render_secret_path):
+        creds = service_account.Credentials.from_service_account_file(render_secret_path)
         client = vision.ImageAnnotatorClient(credentials=creds)
     else:
         client = vision.ImageAnnotatorClient()
