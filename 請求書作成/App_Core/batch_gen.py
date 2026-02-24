@@ -112,18 +112,27 @@ def generate_pdf(invoice_data):
         # Check if we are in a Linux environment (like Render) or Windows
         executable_path = None
         if os.name != 'nt':
-            # Render usually installs chromium here if installed via apt, or playwright puts it in ~/.cache
-            # Playwright's default chromium path on linux
-            linux_paths = [
-                "/usr/bin/chromium", 
-                "/usr/bin/chromium-browser",
-                "/usr/bin/google-chrome"
-            ]
-            for path_choice in linux_paths:
-                if os.path.exists(path_choice):
-                    executable_path = path_choice
-                    break
-                    
+            import glob
+            # First, check if PLAYWRIGHT_BROWSERS_PATH is set (Render custom cache)
+            pw_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
+            if pw_path and os.path.exists(pw_path):
+                # Look for chrome inside chromium-xxxx/chrome-linux/chrome
+                search_pattern = os.path.join(pw_path, 'chromium-*', 'chrome-linux', 'chrome')
+                matches = glob.glob(search_pattern)
+                if matches:
+                    executable_path = matches[0]
+            
+            # Fallback to standard system paths
+            if not executable_path:
+                linux_paths = [
+                    "/usr/bin/chromium", 
+                    "/usr/bin/chromium-browser",
+                    "/usr/bin/google-chrome"
+                ]
+                for path_choice in linux_paths:
+                    if os.path.exists(path_choice):
+                        executable_path = path_choice
+                        break
         if executable_path:
             print(f"[DEBUG] Launching Playwright with explicit chromium path: {executable_path}")
             browser = p.chromium.launch(headless=True, executable_path=executable_path, args=['--no-sandbox', '--disable-setuid-sandbox'])
