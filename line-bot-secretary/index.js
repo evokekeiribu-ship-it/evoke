@@ -118,6 +118,8 @@ async function handleEvent(event) {
                 exec(`"${pythonExe}" "${scriptPath}"`, { cwd: workDir }, async (error, stdout, stderr) => {
                     if (error) {
                         console.error(`実行エラー: ${error.message}`);
+                        console.error(`Python出力 (stdout): ${stdout}`);
+                        console.error(`Pythonエラー (stderr): ${stderr}`);
                         const safeErrorMessage = error.message.length > 500 ? error.message.substring(0, 500) + '...' : error.message;
                         await lineWorksApi.sendTextMessage(userId, `【エラー】請求書の作成に失敗しました💦\n${safeErrorMessage}`).catch(e => console.error(e));
                         return resolve(null);
