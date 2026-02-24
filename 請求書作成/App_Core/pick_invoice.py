@@ -119,9 +119,34 @@ def generate_pdf(destination_name, qty, custom_date_str=None):
 
     print(f"Creating PDF: {out_pdf_name}")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # Check if we are in a Linux environment (like Render) or Windows
+        executable_path = None
+        if os.name != 'nt':
+            # Render usually installs chromium here if installed via apt, or playwright puts it in ~/.cache
+            # Playwright's default chromium path on linux
+            linux_paths = [
+                "/usr/bin/chromium", 
+                "/usr/bin/chromium-browser",
+                "/usr/bin/google-chrome"
+            ]
+            for path_choice in linux_paths:
+                if os.path.exists(path_choice):
+                    executable_path = path_choice
+                    break
+                    
+        if executable_path:
+            print(f"[DEBUG] Launching Playwright with explicit chromium path: {executable_path}")
+            browser = p.chromium.launch(headless=True, executable_path=executable_path, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        else:
+            print("[DEBUG] Launching Playwright with default bundled chromium")
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+
         page = browser.new_page()
         page.goto(f"file:///{temp_html.replace(chr(92), '/')}")
+        page.wait_for_load_state("networkidle")
+        # Ensure all web fonts (like Noto Sans JP) are fully loaded and applied
+        page.evaluate("document.fonts.ready")
+        page.wait_for_timeout(1000) # Give 1 extra second for layout recalculation
         page.pdf(path=out_pdf_path, format="A4", display_header_footer=False, print_background=True)
         browser.close()
 
