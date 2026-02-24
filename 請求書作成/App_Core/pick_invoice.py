@@ -127,8 +127,8 @@ def generate_pdf(destination_name, qty, custom_date_str=None):
             pw_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
             if pw_path and os.path.exists(pw_path):
                 # Look for chrome inside chromium-xxxx/chrome-linux/chrome
-                search_pattern = os.path.join(pw_path, 'chromium-*', 'chrome-linux', 'chrome')
-                matches = glob.glob(search_pattern)
+                search_pattern = os.path.join(pw_path, '**', 'chrome')
+                matches = glob.glob(search_pattern, recursive=True)
                 if matches:
                     executable_path = matches[0]
             
