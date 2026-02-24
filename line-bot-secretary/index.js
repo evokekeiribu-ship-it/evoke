@@ -92,7 +92,7 @@ async function handleEvent(event) {
             console.log("👉 LINE WORKSから画像を受信しました！請求書作成を開始します。");
 
             // 処理中に移行
-            userStates[userId].state = 'processing';
+            userStates[userId] = { state: 'processing' };
 
             await lineWorksApi.sendTextMessage(userId, "【システム】レシート画像を認識しました！請求書を作成しています...⏳").catch(e => console.error(e));
 
