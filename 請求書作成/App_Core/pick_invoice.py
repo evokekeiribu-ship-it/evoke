@@ -145,10 +145,10 @@ def generate_pdf(destination_name, qty, custom_date_str=None):
                         break
         if executable_path:
             print(f"[DEBUG] Launching Playwright with explicit chromium path: {executable_path}")
-            browser = p.chromium.launch(headless=True, executable_path=executable_path, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'])
+            browser = p.chromium.launch(headless=True, executable_path=executable_path, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote'])
         else:
             print("[DEBUG] Launching Playwright with default bundled chromium")
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'])
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote'])
 
         page = browser.new_page()
         page.goto(f"file:///{temp_html.replace(chr(92), '/')}")
