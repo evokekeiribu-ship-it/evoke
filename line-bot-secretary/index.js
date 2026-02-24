@@ -4,6 +4,7 @@ const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
+const https = require('https');
 
 // LINE WORKS API 用の独自モジュール
 const lineWorksApi = require('./lineWorksApi');
@@ -535,4 +536,19 @@ async function handleEvent(event) {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`秘書ちゃんBotサーバー(LINE WORKS版)がクラウド上で稼働中です！（ポート: ${port}）`);
+
+    // Renderの無料枠（15分でスリープ）を防止するためのセルフPing機能
+    // 14分（840,000ミリ秒）ごとに自分自身にリクエストを送る
+    setInterval(() => {
+        const renderUrl = process.env.RENDER_EXTERNAL_URL;
+        if (renderUrl) {
+            https.get(`${renderUrl}/webhook`, (resp) => {
+                if (resp.statusCode === 200) {
+                    console.log('Keep-alive ping successful');
+                }
+            }).on("error", (err) => {
+                console.log("Keep-alive ping failed: " + err.message);
+            });
+        }
+    }, 840000); // 14 minutes
 });
