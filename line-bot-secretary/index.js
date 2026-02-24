@@ -88,8 +88,17 @@ async function handleEvent(event) {
 
     // --- 画像メッセージ（請求書作成）の処理 ---
     if (event.content.type === 'image') {
+        const currentState = userStates[userId] ? userStates[userId].state : null;
+        if (currentState !== 'awaiting_receipt_image') {
+            console.log("DEBUG: Ignoring image because state is not awaiting_receipt_image");
+            return Promise.resolve(null);
+        }
+
         return new Promise(async (resolve) => {
             console.log("👉 LINE WORKSから画像を受信しました！請求書作成を開始します。");
+
+            // 処理中に移行
+            userStates[userId].state = 'processing';
 
             await lineWorksApi.sendTextMessage(userId, "【システム】レシート画像を認識しました！請求書を作成しています...⏳").catch(e => console.error(e));
 
@@ -122,6 +131,7 @@ async function handleEvent(event) {
                         console.error(`Pythonエラー (stderr): ${stderr}`);
                         const safeErrorMessage = error.message.length > 500 ? error.message.substring(0, 500) + '...' : error.message;
                         await lineWorksApi.sendTextMessage(userId, `【エラー】請求書の作成に失敗しました💦\n${safeErrorMessage}`).catch(e => console.error(e));
+                        delete userStates[userId];
                         return resolve(null);
                     }
 
@@ -153,6 +163,7 @@ async function handleEvent(event) {
 
                     if (!latestPdfPath) {
                         await lineWorksApi.sendTextMessage(userId, "【システム】スクリプトは成功しましたが、PDFが見つかりませんでした💦").catch(e => console.error(e));
+                        delete userStates[userId];
                         return resolve(null);
                     }
 
@@ -160,8 +171,8 @@ async function handleEvent(event) {
                     await lineWorksApi.sendTextMessage(userId, "【システム】請求書が完成しました！✨\nPDFファイルを送信します...").catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDFファイル送信):", err.message || err));
 
-                    // 以降のフロー
-                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を削除しますか？👇\n1: はい\n2: いいえ\n(関係ないメッセージを送るとそのままAIと会話できます)").catch(err => console.error(err));
+                    // ※LINE WORKS のローディングスピナー対策：ファイル送信直後に明示的にテキストメッセージを添えることでUIのローディング表示を終了させる
+                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n(関係ないメッセージを送ると状態が解除されAIと会話できます)").catch(err => console.error(err));
                     userStates[userId] = { state: 'awaiting_image_delete' };
 
                     resolve(null);
@@ -443,6 +454,12 @@ async function handleEvent(event) {
     if (userMessage === "ピック依頼") {
         userStates[userId] = { state: 'awaiting_dest' };
         return lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の請求書を作成します！\n宛先を選択してください：\n\n1: 株式会社ミナミトランスポートレーション\n2: 株式会社TUYOSHI\n\n（半角数字で「1」か「2」を送信してください）");
+    }
+
+    // --- レシート画像読み取り（開始トリガー）の処理 ---
+    if (userMessage === "レシート読取" || userMessage === "レシート読み取り") {
+        userStates[userId] = { state: 'awaiting_receipt_image' };
+        return lineWorksApi.sendTextMessage(userId, "【システム】レシート画像から請求書を自動作成します！\n画像を送信してください📸");
     }
 
     // --- PC遠隔操作コマンドの処理 ---
