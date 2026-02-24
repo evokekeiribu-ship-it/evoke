@@ -334,6 +334,9 @@ async function handleEvent(event) {
                     await lineWorksApi.sendTextMessage(userId, `【システム】${destName}宛 (${qty}個) の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDF送信):", err.message || err));
 
+                    // ※LINE WORKS のローディングスピナー対策：ファイル送信直後に明示的にテキストメッセージを添える
+                    await lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の作成が完了しました！🧾").catch(e => console.error(e));
+
                     delete userStates[userId];
                     resolve(null);
                 });
