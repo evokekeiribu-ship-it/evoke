@@ -133,6 +133,7 @@ def generate_pdf(invoice_data):
             
         page = browser.new_page()
         page.goto(f"file:///{temp_html.replace(chr(92), '/')}")
+        page.wait_for_load_state("networkidle")
         page.pdf(path=out_pdf_path, format="A4", display_header_footer=False, print_background=True)
         browser.close()
 
