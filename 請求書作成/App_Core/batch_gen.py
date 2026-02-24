@@ -134,6 +134,9 @@ def generate_pdf(invoice_data):
         page = browser.new_page()
         page.goto(f"file:///{temp_html.replace(chr(92), '/')}")
         page.wait_for_load_state("networkidle")
+        # Ensure all web fonts (like Noto Sans JP) are fully loaded and applied
+        page.evaluate("document.fonts.ready")
+        page.wait_for_timeout(1000) # Give 1 extra second for layout recalculation
         page.pdf(path=out_pdf_path, format="A4", display_header_footer=False, print_background=True)
         browser.close()
 
