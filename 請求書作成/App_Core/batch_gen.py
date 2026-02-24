@@ -129,17 +129,29 @@ def run_ocr_on_all():
     fallback_path = os.path.join(os.path.dirname(BASE_DIR), "google-credentials.json")
     render_secret_path = "/etc/secrets/google-credentials.json"
     
-    if creds_path and os.path.exists(creds_path):
-        creds = service_account.Credentials.from_service_account_file(creds_path)
-        client = vision.ImageAnnotatorClient(credentials=creds)
-    elif os.path.exists(fallback_path):
-        creds = service_account.Credentials.from_service_account_file(fallback_path)
-        client = vision.ImageAnnotatorClient(credentials=creds)
-    elif os.path.exists(render_secret_path):
-        creds = service_account.Credentials.from_service_account_file(render_secret_path)
-        client = vision.ImageAnnotatorClient(credentials=creds)
-    else:
-        client = vision.ImageAnnotatorClient()
+    print(f"[DEBUG] creds_path from env: {creds_path} (exists: {os.path.exists(creds_path) if creds_path else False})")
+    print(f"[DEBUG] fallback_path: {fallback_path} (exists: {os.path.exists(fallback_path)})")
+    print(f"[DEBUG] render_secret_path: {render_secret_path} (exists: {os.path.exists(render_secret_path)})")
+    
+    try:
+        if creds_path and os.path.exists(creds_path):
+            print("[DEBUG] Using creds_path")
+            creds = service_account.Credentials.from_service_account_file(creds_path)
+            client = vision.ImageAnnotatorClient(credentials=creds)
+        elif os.path.exists(fallback_path):
+            print("[DEBUG] Using fallback_path")
+            creds = service_account.Credentials.from_service_account_file(fallback_path)
+            client = vision.ImageAnnotatorClient(credentials=creds)
+        elif os.path.exists(render_secret_path):
+            print("[DEBUG] Using render_secret_path")
+            creds = service_account.Credentials.from_service_account_file(render_secret_path)
+            client = vision.ImageAnnotatorClient(credentials=creds)
+        else:
+            print("[DEBUG] Using default ADC")
+            client = vision.ImageAnnotatorClient()
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize Vision client: {e}")
+        raise e
     
     for filename in files:
         print(f"Processing image: {filename}")
@@ -334,4 +346,12 @@ def run_ocr_on_all():
             sys.exit(1)
 
 if __name__ == "__main__":
-    run_ocr_on_all()
+    try:
+        print("[DEBUG] batch_gen.py execution started.")
+        run_ocr_on_all()
+        print("[DEBUG] batch_gen.py execution finished successfully.")
+    except Exception as e:
+        import traceback
+        print(f"[FATAL_ERROR] batch_gen.py crashed with exception: {e}")
+        traceback.print_exc()
+        raise e
