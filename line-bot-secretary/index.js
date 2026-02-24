@@ -88,12 +88,6 @@ async function handleEvent(event) {
 
     // --- 画像メッセージ（請求書作成）の処理 ---
     if (event.content.type === 'image') {
-        const currentState = userStates[userId] ? userStates[userId].state : null;
-        if (currentState !== 'awaiting_receipt_image') {
-            console.log("DEBUG: Ignoring image because state is not awaiting_receipt_image");
-            return Promise.resolve(null);
-        }
-
         return new Promise(async (resolve) => {
             console.log("👉 LINE WORKSから画像を受信しました！請求書作成を開始します。");
 
