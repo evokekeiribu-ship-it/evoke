@@ -9,3 +9,5 @@ temp_render.html
 .DS_Store
 __pycache__/
 *.pyc
+
+gen-lang-client-*.json
