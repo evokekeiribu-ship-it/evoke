@@ -517,34 +517,5 @@ async function handleEvent(event) {
 // 5. サーバーの起動とWebhookの設定
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-    console.log(`秘書ちゃんBotサーバー(LINE WORKS版)が起動しました（ポート: ${port}）`);
-
-    console.log("トンネル(serveo)を構築しています...");
-    const ssh = spawn('ssh', ['-o', 'StrictHostKeyChecking=no', '-R', `80:localhost:${port}`, 'serveo.net']);
-
-    let isWebhookSet = false;
-    ssh.stdout.on('data', async (data) => {
-        const output = data.toString();
-        const match = output.match(/https:\/\/[a-zA-Z0-9.-]+\.serveousercontent\.com/);
-
-        if (match && !isWebhookSet) {
-            isWebhookSet = true;
-            const tunnelUrl = match[0];
-            app.locals.tunnelUrl = tunnelUrl;
-            console.log(`外部公開URL(serveo): ${tunnelUrl}`);
-
-            // LINE WORKSではセキュリティ上API経由でのWebhook自動設定ができないため、表示のみ行います
-            const webhookUrl = `${tunnelUrl}/webhook`;
-            console.log(`\n========================================`);
-            console.log(`✅ アプリが起動しました。以下のURLを`);
-            console.log(`LINE WORKS Developer Console の Bot設定にある`);
-            console.log(`「Callback URL」に手動で設定して保存してください！`);
-            console.log(`👉 Callback URL: ${webhookUrl}`);
-            console.log(`========================================\n`);
-        }
-    });
-
-    ssh.on('close', () => {
-        console.log('トンネルが閉じられました');
-    });
+    console.log(`秘書ちゃんBotサーバー(LINE WORKS版)がクラウド上で稼働中です！（ポート: ${port}）`);
 });
