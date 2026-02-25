@@ -131,7 +131,13 @@ async function handleEvent(event) {
                 const workDir = path.dirname(scriptPath);
                 const pythonExe = process.env.PYTHON_CMD || 'python';
 
-                exec(`"${pythonExe}" "${scriptPath}"`, { cwd: workDir }, async (error, stdout, stderr) => {
+                // 環境変数を明示的に渡す (Render対応)
+                const execOptions = {
+                    cwd: workDir,
+                    env: { ...process.env }
+                };
+
+                exec(`"${pythonExe}" "${scriptPath}"`, execOptions, async (error, stdout, stderr) => {
                     if (error) {
                         console.error(`実行エラー: ${error.message}`);
                         console.error(`Python出力 (stdout): ${stdout}`);
@@ -402,7 +408,13 @@ async function handleEvent(event) {
 
                 const cmdArgs = `"${dest}" "${content}" "${price}" "${qty}" "${taxType}"`;
 
-                exec(`"${pythonExe}" "${scriptPath}" ${cmdArgs}`, { cwd: workDir }, async (error, stdout, stderr) => {
+                // 環境変数を明示的に渡す (Render対応)
+                const execOptions = {
+                    cwd: workDir,
+                    env: { ...process.env }
+                };
+
+                exec(`"${pythonExe}" "${scriptPath}" ${cmdArgs}`, execOptions, async (error, stdout, stderr) => {
                     if (error) {
                         console.error(`カスタム請求書実行エラー: ${error}`);
                         await lineWorksApi.sendTextMessage(userId, `【エラー】カスタム請求書の作成に失敗しました💦\n${error.message}`).catch(e => console.error(e));
@@ -497,7 +509,13 @@ async function handleEvent(event) {
             const workDir = path.dirname(scriptPath);
             const pythonExe = process.env.PYTHON_CMD || 'python';
 
-            exec(`"${pythonExe}" "${scriptPath}"`, { cwd: workDir }, async (error, stdout, stderr) => {
+            // 環境変数を明示的に渡す (Render対応)
+            const execOptions = {
+                cwd: workDir,
+                env: { ...process.env }
+            };
+
+            exec(`"${pythonExe}" "${scriptPath}"`, execOptions, async (error, stdout, stderr) => {
                 let resultText = "【システム】スクリプトの実行が完了しました！✨\n（変更があれば別途通知されます）";
                 if (error) {
                     console.error(`実行エラー: ${error}`);
