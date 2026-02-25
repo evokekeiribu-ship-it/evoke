@@ -141,8 +141,9 @@ def generate_pdf(invoice_data):
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote'])
             
         page = browser.new_page()
-        page.goto(f"file:///{temp_html.replace(chr(92), '/')}")
-        page.wait_for_load_state("networkidle")
+        import pathlib
+        uri = pathlib.Path(temp_html).resolve().as_uri()
+        page.goto(uri, wait_until="load")
         # Ensure all web fonts (like Noto Sans JP) are fully loaded and applied
         page.evaluate("document.fonts.ready")
         page.wait_for_timeout(1000) # Give 1 extra second for layout recalculation
