@@ -9,6 +9,18 @@ const https = require('https');
 // LINE WORKS API 用の独自モジュール
 const lineWorksApi = require('./lineWorksApi');
 
+// Google API 認証情報の環境変数からの復元 (Render対応)
+if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    try {
+        const credsFile = path.join(__dirname, 'google-credentials.json');
+        fs.writeFileSync(credsFile, process.env.GOOGLE_CREDENTIALS_JSON);
+        process.env.GOOGLE_APPLICATION_CREDENTIALS = credsFile;
+        console.log("✅ Google Credentials JSON file created from environment variable.");
+    } catch (err) {
+        console.error("❌ Error creating Google Credentials file:", err);
+    }
+}
+
 // 2. クライアントの準備
 const app = express();
 app.use(express.json()); // LINE WORKS からの JSON ボディをパースする
