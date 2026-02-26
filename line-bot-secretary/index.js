@@ -167,13 +167,19 @@ async function handleEvent(event) {
                     // 5. 確認メッセージの生成
                     let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
                     let total = 0;
+                    let totalQty = 0;
                     parsedData.items.forEach(it => {
                         confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
                         total += it.total;
+                        totalQty += it.qty;
                     });
 
                     if (parsedData.items.length === 0) {
                         confirmText += "（商品が読み取れませんでした）\n";
+                    }
+
+                    if (parsedData.target_qty && parsedData.target_qty > 0 && parsedData.target_qty !== totalQty) {
+                        confirmText = `⚠️ 警告 ⚠️\nレシートの合計点数（${parsedData.target_qty}点）と、読み取った商品の合計個数（${totalQty}個）が一致していません！\n一部の商品が読み取れていないか、誤認識されている可能性があります。\n\n` + confirmText;
                     }
 
                     confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: いいえ`;
