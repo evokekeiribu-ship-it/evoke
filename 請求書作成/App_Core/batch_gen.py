@@ -262,7 +262,7 @@ def run_ocr_on_all():
                 if '計' in row:
                     print(f"  [RAW SUBTOTAL ROW] {row}")
                 k = row.lower()
-                if 'iphone' in k or 'apple' in k or 'sim' in k or '未開封' in k or 'playstation' in k or 'piaystation' in k or 'station' in k or 'switch' in k or 'instax' in k or 'コントローラー' in k or 'チェキ' in k or 'phone' in k or 'stax' in k or 'ps5' in k or 'ディスク' in k or 'ワンピース' in k or '一番くじ' in k or 'フィギュア' in k or 'カード' in k or 'box' in k or 'パック' in k or 'ポケモン' in k:
+                if 'iphone' in k or 'apple' in k or 'sim' in k or '未開封' in k or 'playstation' in k or 'piaystation' in k or 'station' in k or 'switch' in k or 'instax' in k or 'コントローラー' in k or 'チェキ' in k or 'phone' in k or 'stax' in k or 'ps5' in k or 'ディスク' in k or 'ワンピース' in k or '一番くじ' in k or 'フィギュア' in k or 'カード' in k or 'box' in k or 'パック' in k or 'ポケモン' in k or 'デッキ' in k or 'スタート' in k:
                     name_clean = row
                     name_clean = re.sub(r'\bPhone\b', 'iPhone', name_clean, flags=re.I)
                     name_clean = re.sub(r'(?<!SI)M FREE', 'SIM FREE', name_clean, flags=re.I)
