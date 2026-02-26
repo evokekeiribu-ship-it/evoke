@@ -178,8 +178,14 @@ async function handleEvent(event) {
                         confirmText += "（商品が読み取れませんでした）\n";
                     }
 
-                    if (parsedData.target_qty && parsedData.target_qty > 0 && parsedData.target_qty !== totalQty) {
-                        confirmText = `⚠️ 警告 ⚠️\nレシートの合計点数（${parsedData.target_qty}点）と、読み取った商品の合計個数（${totalQty}個）が一致していません！\n一部の商品が読み取れていないか、誤認識されている可能性があります。\n\n` + confirmText;
+                    if (parsedData.target_qty && parsedData.target_qty > 0) {
+                        if (parsedData.target_qty !== totalQty) {
+                            confirmText = `⚠️ 警告 ⚠️\nレシートの合計点数（${parsedData.target_qty}点）と、読み取った商品の合計個数（${totalQty}個）が一致していません！\n一部の商品が読み取れていないか、誤認識されている可能性があります。\n\n` + confirmText;
+                        } else {
+                            confirmText = `✅ レシートの合計点数（${parsedData.target_qty}点）と完全に一致しました！\n\n` + confirmText;
+                        }
+                    } else {
+                        confirmText = `（※レシート上に合計点数の記載が見当たらなかったため、個数の一致チェックはスキップしました）\n\n` + confirmText;
                     }
 
                     confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: いいえ`;
