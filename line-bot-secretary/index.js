@@ -3,7 +3,7 @@ const express = require('express');
 const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execFile } = require('child_process');
 const https = require('https');
 
 // LINE WORKS API 用の独自モジュール
@@ -137,56 +137,55 @@ async function handleEvent(event) {
                     env: { ...process.env }
                 };
 
-                exec(`"${pythonExe}" "${scriptPath}"`, execOptions, async (error, stdout, stderr) => {
+                execFile(pythonExe, [scriptPath, '--parse-only', imagePath], execOptions, async (error, stdout, stderr) => {
                     if (error) {
                         console.error(`実行エラー: ${error.message}`);
-                        console.error(`Python出力 (stdout): ${stdout}`);
                         console.error(`Pythonエラー (stderr): ${stderr}`);
                         const safeErrorMessage = error.message.length > 500 ? error.message.substring(0, 500) + '...' : error.message;
-                        await lineWorksApi.sendTextMessage(userId, `【エラー】請求書の作成に失敗しました💦\n${safeErrorMessage}`).catch(e => console.error(e));
+                        await lineWorksApi.sendTextMessage(userId, `【エラー】文字の読み取りに失敗しました💦\n${safeErrorMessage}`).catch(e => console.error(e));
                         delete userStates[userId];
                         return resolve(null);
                     }
 
-                    // 4. 最新のPDFを探す
-                    let latestPdfPath = null;
-                    let latestTime = 0;
-                    let foundFilename = null;
-
-                    if (fs.existsSync(invoiceOutDir)) {
-                        const dateFolders = fs.readdirSync(invoiceOutDir);
-                        for (const dFolder of dateFolders) {
-                            const folderPath = path.join(invoiceOutDir, dFolder);
-                            if (fs.statSync(folderPath).isDirectory()) {
-                                const files = fs.readdirSync(folderPath);
-                                for (const file of files) {
-                                    if (file.endsWith('.pdf')) {
-                                        const filePath = path.join(folderPath, file);
-                                        const stat = fs.statSync(filePath);
-                                        if (stat.mtimeMs > latestTime) {
-                                            latestTime = stat.mtimeMs;
-                                            latestPdfPath = filePath;
-                                            foundFilename = file;
-                                        }
-                                    }
-                                }
-                            }
+                    // 4. JSONの抽出
+                    let parsedData = null;
+                    try {
+                        const match = stdout.match(/___JSON_START___\r?\n([\s\S]*?)\r?\n___JSON_END___/);
+                        if (match && match[1]) {
+                            parsedData = JSON.parse(match[1]);
                         }
+                    } catch (e) {
+                        console.error("JSON parse error:", e);
                     }
 
-                    if (!latestPdfPath) {
-                        await lineWorksApi.sendTextMessage(userId, "【システム】スクリプトは成功しましたが、PDFが見つかりませんでした💦").catch(e => console.error(e));
+                    if (!parsedData || !parsedData.items || parsedData.items.length === 0) {
+                        await lineWorksApi.sendTextMessage(userId, "【システム】レシートから商品を読み取れませんでした💦\n明るい場所で撮り直すか、「請求書」と送信して手動作成をお試しください。").catch(e => console.error(e));
                         delete userStates[userId];
                         return resolve(null);
                     }
 
-                    // 5. PDFファイルの直接送信
-                    await lineWorksApi.sendTextMessage(userId, "【システム】請求書が完成しました！✨\nPDFファイルを送信します...").catch(e => console.error(e));
-                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDFファイル送信):", err.message || err));
+                    // 5. 確認メッセージの生成
+                    let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
+                    let total = 0;
+                    parsedData.items.forEach(it => {
+                        confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
+                        total += it.total;
+                    });
 
-                    // ※LINE WORKS のローディングスピナー対策：ファイル送信直後に明示的にテキストメッセージを添えることでUIのローディング表示を終了させる
-                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n(関係ないメッセージを送ると状態が解除されAIと会話できます)").catch(err => console.error(err));
-                    userStates[userId] = { state: 'awaiting_image_delete' };
+                    if (parsedData.items.length === 0) {
+                        confirmText += "（商品が読み取れませんでした）\n";
+                    }
+
+                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？\n「はい」または「いいえ」でお答えください。`;
+
+                    await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
+
+                    // 6. 状態の更新
+                    userStates[userId] = {
+                        state: 'awaiting_ocr_confirm',
+                        invoiceData: parsedData,
+                        fileId: fileId
+                    };
 
                     resolve(null);
                 });
@@ -278,6 +277,57 @@ async function handleEvent(event) {
             // 1,2 以外の関連しないメッセージが来た場合は状態をクリアして、下のGeminiに流す
             console.log("DEBUG: fallthrough for unrecognized message in delete prompt:", userMessage);
             delete userStates[userId];
+        }
+
+    } else if (userStates[userId] && userStates[userId].state === 'awaiting_ocr_confirm') {
+        const isYes = userMessage === 'はい' || userMessage === 'ハイ' || userMessage.toLowerCase() === 'yes' || userMessage === '1';
+        const isNo = userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no' || userMessage === '2';
+
+        if (isYes) {
+            const invoiceData = userStates[userId].invoiceData;
+            userStates[userId].state = 'processing';
+
+            return new Promise(async (resolve) => {
+                await lineWorksApi.sendTextMessage(userId, "【システム】承知しました！PDFを作成しています...⏳").catch(e => console.error(e));
+
+                const scriptPath = path.join(rootDir, '請求書作成', 'App_Core', 'batch_gen.py');
+                const workDir = path.dirname(scriptPath);
+                const pythonExe = process.env.PYTHON_CMD || 'python';
+                const execOptions = { cwd: workDir, env: { ...process.env } };
+
+                execFile(pythonExe, [scriptPath, '--generate-from-json', JSON.stringify(invoiceData)], execOptions, async (error, stdout, stderr) => {
+                    if (error) {
+                        console.error(`実行エラー: ${error.message}`);
+                        await lineWorksApi.sendTextMessage(userId, `【エラー】PDFの生成に失敗しました💦`).catch(e => console.error(e));
+                        delete userStates[userId];
+                        return resolve(null);
+                    }
+
+                    // PDFパスの抽出
+                    let pdfPathMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
+                    if (!pdfPathMatch || !pdfPathMatch[1]) {
+                        await lineWorksApi.sendTextMessage(userId, "【システム】PDFが見つかりませんでした💦").catch(e => console.error(e));
+                        delete userStates[userId];
+                        return resolve(null);
+                    }
+
+                    const latestPdfPath = pdfPathMatch[1].trim();
+                    const foundFilename = path.basename(latestPdfPath);
+
+                    await lineWorksApi.sendTextMessage(userId, "【システム】請求書が完成しました！✨\nPDFファイルを送信します...").catch(e => console.error(e));
+                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error :", err));
+
+                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n(関係ないメッセージを送ると状態が解除されAIと会話できます)").catch(err => console.error(err));
+                    userStates[userId] = { state: 'awaiting_image_delete' };
+
+                    resolve(null);
+                });
+            });
+        } else if (isNo) {
+            delete userStates[userId];
+            return lineWorksApi.sendTextMessage(userId, "【システム】作成をキャンセルしました。手動で作成する場合は「請求書」と送信してください。");
+        } else {
+            return lineWorksApi.sendTextMessage(userId, "【システム】「はい」か「いいえ」でお答えください🙏");
         }
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_dest') {

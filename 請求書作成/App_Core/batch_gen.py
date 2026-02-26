@@ -1,5 +1,8 @@
 import os
 import re
+import sys
+import json
+import argparse
 from datetime import datetime, timedelta
 
 from google.cloud import vision
@@ -22,7 +25,11 @@ SEAL_PATH = os.path.join(SCRIPT_DIR, "seal_b64.txt")
 
 def generate_pdf(invoice_data):
     today = invoice_data['today']
+    if isinstance(today, str):
+        today = datetime.fromisoformat(today)
     deadline = invoice_data['deadline']
+    if isinstance(deadline, str):
+        deadline = datetime.fromisoformat(deadline)
     items = invoice_data['items']
 
     today_str = today.strftime('%Y%m%d')
@@ -154,8 +161,13 @@ def generate_pdf(invoice_data):
         os.remove(temp_html)
     return out_pdf_path
 
-def run_ocr_on_all():
-    files = [f for f in os.listdir(IN_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf'))]
+def run_ocr_on_all(parse_only_file=None):
+    if parse_only_file:
+        search_dir = os.path.dirname(parse_only_file)
+        files = [os.path.basename(parse_only_file)]
+    else:
+        search_dir = IN_DIR
+        files = [f for f in os.listdir(search_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf'))]
     if not files: return
     
     from google.oauth2 import service_account
@@ -189,8 +201,9 @@ def run_ocr_on_all():
         raise e
     
     for filename in files:
-        print(f"Processing image: {filename}")
-        img_path = os.path.join(IN_DIR, filename)
+        if not parse_only_file:
+            print(f"Processing image: {filename}")
+        img_path = os.path.join(search_dir, filename)
         try:
             with open(img_path, 'rb') as image_file:
                 content = image_file.read()
@@ -368,10 +381,20 @@ def run_ocr_on_all():
                 print(f"DEBUG item {idx}: {debug_it['name']}")
             
             invoice_data = {
-                'today': today,
-                'deadline': deadline,
+                'today': today.isoformat(),
+                'deadline': deadline.isoformat(),
                 'items': items
             }
+            
+            if parse_only_file:
+                print("___JSON_START___")
+                print(json.dumps(invoice_data, ensure_ascii=False))
+                print("___JSON_END___")
+                return
+            
+            # 従来通りのPDF生成フロー
+            invoice_data['today'] = today
+            invoice_data['deadline'] = deadline
             pdf_path = generate_pdf(invoice_data)
             print(f" -> Generated {os.path.basename(pdf_path)}")
             
@@ -381,12 +404,24 @@ def run_ocr_on_all():
             sys.exit(1)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--parse-only", help="Path to image file to parse")
+    parser.add_argument("--generate-from-json", help="JSON string containing parsed invoice data")
+    args = parser.parse_args()
+
     try:
-        print("[DEBUG] batch_gen.py execution started.")
-        run_ocr_on_all()
-        print("[DEBUG] batch_gen.py execution finished successfully.")
+        if args.parse_only:
+            run_ocr_on_all(parse_only_file=args.parse_only)
+        elif args.generate_from_json:
+            data = json.loads(args.generate_from_json)
+            out_path = generate_pdf(data)
+            print(f"___PDF_GENERATED___:{out_path}")
+        else:
+            print("[DEBUG] batch_gen.py execution started.")
+            run_ocr_on_all()
+            print("[DEBUG] batch_gen.py execution finished successfully.")
     except Exception as e:
         import traceback
         print(f"[FATAL_ERROR] batch_gen.py crashed with exception: {e}")
         traceback.print_exc()
-        raise e
+        sys.exit(1)
