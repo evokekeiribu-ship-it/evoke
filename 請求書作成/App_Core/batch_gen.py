@@ -346,39 +346,6 @@ def run_ocr_on_all(parse_only_file=None):
 
             print(f"DEBUG EARLY: filename {filename} len(items)={len(items)}")
 
-            # ========================
-            # 点数（個数）の読み取り
-            # ========================
-            target_qty = -1
-            qty_patterns = [
-                r'(?:合計|お買上|買上|販売|小計|商品).*(?:点数|個数)\D*(\d+)',
-                r'(?:合計|お買上|買上|点数|個数)\D*(\d+)\s*(?:点|個|件)',
-                r'(?:点数|個数)\s*[:：-]\s*(\d+)',
-                r'(\d+)\s*(?:点|個|件)\s*の(?:お買上|買上)'
-            ]
-            clean_text = full_text.replace(' ', '').replace('　', '').replace(',', '')
-            for pat in qty_patterns:
-                match_qty = re.search(pat, clean_text)
-                if match_qty:
-                    try:
-                        val = int(match_qty.group(1))
-                        if 0 < val < 1000:
-                            target_qty = val
-                            break
-                    except: pass
-            
-            if target_qty == -1:
-                # 汎用的な「〇点」「〇個」の抽出（「計」や「合」が含まれている場合のみ）
-                if '計' in clean_text or '合' in clean_text:
-                    # 後ろから検索して合計らしき点数を探す
-                    matches = re.findall(r'(\d+)[点個件]', clean_text)
-                    if matches:
-                        try:
-                            val = int(matches[-1])
-                            if 0 < val < 1000:
-                                target_qty = val
-                        except: pass
-
             if target_subtotal > 0:
                 current_subtotal = sum(it['total'] for it in items)
                 if current_subtotal < target_subtotal:
@@ -416,8 +383,7 @@ def run_ocr_on_all(parse_only_file=None):
             invoice_data = {
                 'today': today.isoformat(),
                 'deadline': deadline.isoformat(),
-                'items': items,
-                'target_qty': target_qty
+                'items': items
             }
             
             if parse_only_file:
