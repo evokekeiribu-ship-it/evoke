@@ -176,7 +176,7 @@ async function handleEvent(event) {
                         confirmText += "（商品が読み取れませんでした）\n";
                     }
 
-                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？\n「はい」または「いいえ」でお答えください。`;
+                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: いいえ`;
 
                     await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
 
