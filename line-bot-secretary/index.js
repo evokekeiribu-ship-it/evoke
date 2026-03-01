@@ -333,12 +333,12 @@ async function handleEvent(event) {
         }
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_dest') {
-        if (userMessage === '1' || userMessage === '2') {
+        if (['1', '2', '3', '4'].includes(userMessage)) {
             userStates[userId].state = 'awaiting_qty';
             userStates[userId].destChoice = userMessage;
             return lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の個数を教えてください！（半角数字のみ）");
         } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1 または 2 を入力してください。\n（やめる場合は「キャンセル」と入力）");
+            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1 から 4 のいずれかを入力してください。\n（やめる場合は「キャンセル」と入力）");
         }
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_qty') {
