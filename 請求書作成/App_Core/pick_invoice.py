@@ -178,6 +178,10 @@ if __name__ == "__main__":
                 destination_name = "株式会社ミナミトランスポートレーション"
             elif dest_choice == '2':
                 destination_name = "株式会社TUYOSHI"
+            elif dest_choice == '3':
+                destination_name = "株式会社りんご"
+            elif dest_choice == '4':
+                destination_name = "寺本康太"
             
             if qty_input.isdigit() and int(qty_input) > 0:
                 qty = int(qty_input)
@@ -197,17 +201,25 @@ if __name__ == "__main__":
         print("宛先を選択してください：")
         print("1: 株式会社ミナミトランスポートレーション")
         print("2: 株式会社TUYOSHI")
+        print("3: 株式会社りんご")
+        print("4: 寺本康太")
         
         while True:
-            dest_choice = input("入力 (1 または 2): ").strip()
+            dest_choice = input("入力 (1 から 4): ").strip()
             if dest_choice == '1':
                 destination_name = "株式会社ミナミトランスポートレーション"
                 break
             elif dest_choice == '2':
                 destination_name = "株式会社TUYOSHI"
                 break
+            elif dest_choice == '3':
+                destination_name = "株式会社りんご"
+                break
+            elif dest_choice == '4':
+                destination_name = "寺本康太"
+                break
             else:
-                print("エラー: 1 または 2 を入力してください。")
+                print("エラー: 1 から 4 を入力してください。")
                 
         while True:
             qty_input = input("ピック依頼の個数を入力してください: ").strip()

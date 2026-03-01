@@ -394,7 +394,11 @@ async function handleEvent(event) {
                         return resolve(null);
                     }
 
-                    let destName = (destChoice === '1') ? 'ミナミトランスポートレーション' : (destChoice === '2' ? 'TUYOSHI' : 'その他');
+                    let destName = 'その他';
+                    if (destChoice === '1') destName = 'ミナミトランスポートレーション';
+                    else if (destChoice === '2') destName = 'TUYOSHI';
+                    else if (destChoice === '3') destName = '株式会社りんご';
+                    else if (destChoice === '4') destName = '寺本康太';
 
                     await lineWorksApi.sendTextMessage(userId, `【システム】${destName}宛 (${qty}個) の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDF送信):", err.message || err));
@@ -527,7 +531,7 @@ async function handleEvent(event) {
     // --- ピック依頼（開始トリガー）の処理 ---
     if (userMessage === "ピック依頼") {
         userStates[userId] = { state: 'awaiting_dest' };
-        return lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の請求書を作成します！\n宛先を選択してください：\n\n1: 株式会社ミナミトランスポートレーション\n2: 株式会社TUYOSHI\n\n（半角数字で「1」か「2」を送信してください）");
+        return lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の請求書を作成します！\n宛先を選択してください：\n\n1: 株式会社ミナミトランスポートレーション\n2: 株式会社TUYOSHI\n3: 株式会社りんご\n4: 寺本康太\n\n（半角数字で「1」から「4」のいずれかを送信してください）");
     }
 
     // --- レシート画像読み取り（開始トリガー）の処理 ---

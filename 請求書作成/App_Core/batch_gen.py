@@ -292,7 +292,7 @@ def run_ocr_on_all(parse_only_file=None):
                     name_clean = re.sub(r'Ni\s*ntendo|Nintend0', 'Nintendo', name_clean, flags=re.I)
                     name_clean = name_clean.replace('  ', ' ')
                     
-                    row_clean = re.sub(r'\b\d{13}\b', '', name_clean)
+                    row_clean = re.sub(r'\b\d{8,14}\b', '', name_clean)
                     row_clean = re.sub(r'\s*,\s*', ',', row_clean)
                     row_clean = re.sub(r'\s+([¥円])', r'\1', row_clean)
                     
