@@ -299,8 +299,9 @@ async function handleEvent(event) {
 
                 execFile(pythonExe, [scriptPath, '--generate-from-json', JSON.stringify(invoiceData)], execOptions, async (error, stdout, stderr) => {
                     if (error) {
-                        console.error(`実行エラー: ${error.message}`);
-                        await lineWorksApi.sendTextMessage(userId, `【エラー】PDFの生成に失敗しました💦`).catch(e => console.error(e));
+                        console.error(`実行エラー: ${error.message}\n${stderr}`);
+                        let errDetails = stderr ? stderr.substring(0, 500) : error.message.substring(0, 500);
+                        await lineWorksApi.sendTextMessage(userId, `【システムエラー詳細】\nPDF生成に失敗しました。\n\n詳細:\n${errDetails}\n\nこの画面をスクショして開発者に送付してください💦`).catch(e => console.error(e));
                         delete userStates[userId];
                         return resolve(null);
                     }

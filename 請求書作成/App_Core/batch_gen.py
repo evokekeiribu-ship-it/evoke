@@ -67,7 +67,10 @@ def generate_pdf(invoice_data):
     html_content = re.sub(r'<th>請求 日 :</th>.*?<td>.*?<', f'<th>請求 日 :</th><td>{today_jp}<', html_content, flags=re.DOTALL)
     html_content = re.sub(r'\(\s*お支払い期限\s*\)</span>\s*<span>.*?</span>', f'( お支払い期限 )</span>\n                    <span>{deadline_jp}</span>', html_content, flags=re.DOTALL)
 
-    total_sum = sum(it['total'] for it in items)
+    total_sum = 0
+    for it in items:
+        try: total_sum += int(it.get('total', 0))
+        except: pass
     
     # Generate rows HTML
     rows_html = ""
@@ -76,13 +79,26 @@ def generate_pdf(invoice_data):
         cls = "even" if i % 2 == 0 else "odd"
         if i < len(items):
             it = items[i]
-            unit = it.get("unit", it.get("total", 0) // it.get("qty", 1) if it.get("qty", 1) > 0 else 0)
+            
+            try: qty_val = int(it.get("qty", 1))
+            except: qty_val = 1
+            
+            try: total_val = int(it.get("total", 0))
+            except: total_val = 0
+            
+            unit_val = it.get("unit")
+            if unit_val is None:
+                unit_val = total_val // qty_val if qty_val > 0 else 0
+            else:
+                try: unit_val = int(unit_val)
+                except: unit_val = 0
+                
             rows_html += f'''
                 <tr class="{cls}">
                     <td>{it.get("name", "")}</td>
-                    <td>{unit:,}</td>
-                    <td>{it.get("qty", 1)}</td>
-                    <td>{it.get("total", 0):,}</td>
+                    <td>{unit_val:,}</td>
+                    <td>{qty_val}</td>
+                    <td>{total_val:,}</td>
                 </tr>'''
         else:
             rows_html += f'''
