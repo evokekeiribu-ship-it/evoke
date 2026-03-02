@@ -370,7 +370,7 @@ ${userMessage}`;
                         throw new Error("JSON Parse Error");
                     }
 
-                    userStates[userId].invoiceData = newData;
+                    userStates[userId].invoiceData.items = newData.items;
 
                     let confirmText = "【システム】修正が完了しました！以下の内容でよろしいですか？👀\n\n【商品リスト】\n";
                     let total = 0;

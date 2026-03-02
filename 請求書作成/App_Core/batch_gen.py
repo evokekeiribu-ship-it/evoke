@@ -76,12 +76,13 @@ def generate_pdf(invoice_data):
         cls = "even" if i % 2 == 0 else "odd"
         if i < len(items):
             it = items[i]
+            unit = it.get("unit", it.get("total", 0) // it.get("qty", 1) if it.get("qty", 1) > 0 else 0)
             rows_html += f'''
                 <tr class="{cls}">
-                    <td>{it["name"]}</td>
-                    <td>{it["unit"]:,}</td>
-                    <td>{it["qty"]}</td>
-                    <td>{it["total"]:,}</td>
+                    <td>{it.get("name", "")}</td>
+                    <td>{unit:,}</td>
+                    <td>{it.get("qty", 1)}</td>
+                    <td>{it.get("total", 0):,}</td>
                 </tr>'''
         else:
             rows_html += f'''
