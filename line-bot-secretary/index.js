@@ -332,12 +332,13 @@ async function handleEvent(event) {
             return new Promise(async (resolve) => {
                 await lineWorksApi.sendTextMessage(userId, "【システム】AIが内容を修正しています... 少々お待ちください🤖").catch(e => console.error(e));
                 try {
+                    const rawTextContext = userStates[userId].invoiceData.raw_text ? `\n【レシートの元の読み取りテキスト（参考）】\n${userStates[userId].invoiceData.raw_text}\n` : '';
                     const prompt = `あなたは請求書の項目の修正アシスタントです。
 以下の現在のJSONデータに対して、ユーザーの指示通りの修正を行ってください。
 修正後の結果は、元のJSONと全く同じスキーマ（必ず { "items": [ ... ] } の形式）のJSONのみを出力してください。Markdownのバッククォートなどは付けないこと。
-
+${rawTextContext}
 【現在のJSON】
-${JSON.stringify(userStates[userId].invoiceData)}
+${JSON.stringify(userStates[userId].invoiceData.items)}
 
 【ユーザーの指示】
 ${userMessage}`;

@@ -389,7 +389,8 @@ def run_ocr_on_all(parse_only_file=None):
             invoice_data = {
                 'today': today.isoformat(),
                 'deadline': deadline.isoformat(),
-                'items': items
+                'items': items,
+                'raw_text': full_text
             }
             
             if parse_only_file:
