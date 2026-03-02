@@ -178,7 +178,7 @@ async function handleEvent(event) {
                         confirmText += "（商品が読み取れませんでした）\n";
                     }
 
-                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: いいえ`;
+                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
 
                     await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
 
@@ -283,7 +283,7 @@ async function handleEvent(event) {
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_ocr_confirm') {
         const isYes = userMessage === 'はい' || userMessage === 'ハイ' || userMessage.toLowerCase() === 'yes' || userMessage === '1';
-        const isNo = userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no' || userMessage === '2';
+        const isNo = userMessage === 'キャンセル' || userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no' || userMessage === '2';
 
         if (isYes) {
             const invoiceData = userStates[userId].invoiceData;
@@ -329,7 +329,48 @@ async function handleEvent(event) {
             delete userStates[userId];
             return lineWorksApi.sendTextMessage(userId, "【システム】作成をキャンセルしました。手動で作成する場合は「請求書」と送信してください。");
         } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】「はい」か「いいえ」でお答えください🙏");
+            return new Promise(async (resolve) => {
+                await lineWorksApi.sendTextMessage(userId, "【システム】AIが内容を修正しています... 少々お待ちください🤖").catch(e => console.error(e));
+                try {
+                    const prompt = `あなたは請求書の項目の修正アシスタントです。
+以下の現在のJSONデータに対して、ユーザーの指示通りの修正を行ってください。
+修正後の結果は、元のJSONと全く同じスキーマのJSONのみを出力してください（Markdownのバッククォートなどは付けないこと）。
+
+【現在のJSON】
+${JSON.stringify(userStates[userId].invoiceData)}
+
+【ユーザーの指示】
+${userMessage}`;
+
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash-lite',
+                        contents: prompt,
+                        config: {
+                            temperature: 0.1
+                        }
+                    });
+
+                    let newJsonStr = response.text.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
+                    let newData = JSON.parse(newJsonStr);
+
+                    userStates[userId].invoiceData = newData;
+
+                    let confirmText = "【システム】修正が完了しました！以下の内容でよろしいですか？👀\n\n【商品リスト】\n";
+                    let total = 0;
+                    newData.items.forEach(it => {
+                        confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
+                        total += it.total;
+                    });
+                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【さらに修正がある場合】\nもう一度指示を送信してください。`;
+
+                    await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
+                    resolve(null);
+                } catch (e) {
+                    console.error("Gemini correction error:", e);
+                    await lineWorksApi.sendTextMessage(userId, "【エラー】AIによる修正に失敗しました💦 まったく別の形式で返ってきた可能性があります。もう一度別の言い方でお試しいただくか、「2」でキャンセルしてください。").catch(e => console.error(e));
+                    resolve(null);
+                }
+            });
         }
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_dest') {
