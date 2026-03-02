@@ -334,7 +334,7 @@ async function handleEvent(event) {
                 try {
                     const prompt = `あなたは請求書の項目の修正アシスタントです。
 以下の現在のJSONデータに対して、ユーザーの指示通りの修正を行ってください。
-修正後の結果は、元のJSONと全く同じスキーマのJSONのみを出力してください（Markdownのバッククォートなどは付けないこと）。
+修正後の結果は、元のJSONと全く同じスキーマ（必ず { "items": [ ... ] } の形式）のJSONのみを出力してください。Markdownのバッククォートなどは付けないこと。
 
 【現在のJSON】
 ${JSON.stringify(userStates[userId].invoiceData)}
@@ -351,7 +351,17 @@ ${userMessage}`;
                     });
 
                     let newJsonStr = response.text.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
-                    let newData = JSON.parse(newJsonStr);
+                    let newData;
+                    try {
+                        newData = JSON.parse(newJsonStr);
+                        if (Array.isArray(newData)) {
+                            newData = { items: newData };
+                        } else if (!newData.items) {
+                            newData = { items: [] };
+                        }
+                    } catch (err) {
+                        throw new Error("JSON Parse Error");
+                    }
 
                     userStates[userId].invoiceData = newData;
 
