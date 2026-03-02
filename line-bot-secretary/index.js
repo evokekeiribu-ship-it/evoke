@@ -347,11 +347,17 @@ ${userMessage}`;
                         model: 'gemini-2.5-flash-lite',
                         contents: prompt,
                         config: {
-                            temperature: 0.1
+                            temperature: 0.1,
+                            responseMimeType: "application/json"
                         }
                     });
 
-                    let newJsonStr = response.text.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
+                    let newJsonStr = response.text;
+                    const jsonMatch = newJsonStr.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        newJsonStr = jsonMatch[0];
+                    }
+
                     let newData;
                     try {
                         newData = JSON.parse(newJsonStr);
@@ -378,7 +384,8 @@ ${userMessage}`;
                     resolve(null);
                 } catch (e) {
                     console.error("Gemini correction error:", e);
-                    await lineWorksApi.sendTextMessage(userId, "【エラー】AIによる修正に失敗しました💦 まったく別の形式で返ってきた可能性があります。もう一度別の言い方でお試しいただくか、「2」でキャンセルしてください。").catch(e => console.error(e));
+                    const errMsg = e.message || String(e);
+                    await lineWorksApi.sendTextMessage(userId, `【エラー】AIによる修正に失敗しました💦\n原因: ${errMsg}\n\n「2」で一度キャンセルしてください。`).catch(e => console.error(e));
                     resolve(null);
                 }
             });

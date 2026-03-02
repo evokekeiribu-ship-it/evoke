@@ -279,7 +279,8 @@ def run_ocr_on_all(parse_only_file=None):
                     'iphone', 'apple', 'sim', '未開封', 'playstation', 'piaystation', 'station', 'switch', 
                     'instax', 'コントローラー', 'チェキ', 'phone', 'stax', 'ps5', 'ディスク', 'ワンピース', 
                     '一番くじ', 'フィギュア', 'カード', 'box', 'パック', 'ポケモン', 'デッキ', 'スタート',
-                    'たまごっち', 'tamagotchi', 'xbox', 'nintendo', '任天堂', 'sony', 'ソニー', 'ゲーム', 'ソフト'
+                    'たまごっち', 'tamagotchi', 'xbox', 'nintendo', '任天堂', 'sony', 'ソニー', 'ゲーム', 'ソフト',
+                    '遊戯王', 'デュエル', 'プロモ', 'シュリンク', 'amiibo', 'アミーボ'
                 ]
                 if any(kw in k for kw in keywords):
                     name_clean = row

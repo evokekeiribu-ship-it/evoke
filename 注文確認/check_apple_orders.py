@@ -134,17 +134,23 @@ def check_orders():
     with Stealth().use_sync(sync_playwright()) as p:
         # ブラウザの起動 (headless=False で実際の画面を表示します)
         # channel="chrome" を指定することで、bot検知されにくいPC本体のChromeを使用します。
-        browser = p.chromium.launch(channel="chrome", headless=False)
-        context = browser.new_context()
-        page = context.new_page()
-
-        # 初回はページの読み込み（JavaScriptなど）に時間がかかり、5秒でタイムアウトするため一度アクセスしておく
+        browser = p.chromium.launch(
+            channel="chrome", 
+            headless=False,
+            args=['--incognito']
+        )
+        
+        # 初回ダミーアクセス用のコンテキスト
+        dummy_context = browser.new_context()
+        dummy_page = dummy_context.new_page()
         print(">>> ブラウザの準備中（初回アクセス）...")
-        page.goto(URL, wait_until="domcontentloaded")
         try:
-            page.wait_for_selector("#signIn\\.orderLookUp\\.orderNumber", timeout=15000)
+            dummy_page.goto(URL, wait_until="domcontentloaded", timeout=15000)
+            dummy_page.wait_for_selector("#signIn\\.orderLookUp\\.orderNumber", timeout=10000)
         except:
             pass
+        finally:
+            dummy_context.close()
         time.sleep(2)
 
         for idx, row in enumerate(orders):
@@ -179,24 +185,49 @@ def check_orders():
             
             success = False
             for attempt in range(3):
+                # 試行ごと、注文ごとにクリーンなコンテキストを作成
+                context = browser.new_context()
+                page = context.new_page()
+                
                 try:
                     # Apple Store ゲスト注文検索ページへ移動
-                    page.goto(URL, wait_until="domcontentloaded")
+                    page.goto(URL, wait_until="networkidle")
+                    
+                    # JSの完全ロードを少し待つ
+                    time.sleep(2)
                     
                     # 入力欄が表示されるまで待機（最大15秒）
                     page.wait_for_selector("#signIn\\.orderLookUp\\.orderNumber", timeout=15000)
                     
-                    # ご注文番号とメールアドレスを入力
-                    page.fill("#signIn\\.orderLookUp\\.emailAddress", email)
-                    page.fill("#signIn\\.orderLookUp\\.orderNumber", order_number)
+                    # ご注文番号とメールアドレスを確実に入力
+                    # クリック後、UIのアニメーション（ラベルが上に移動する等）が完了するのを待たないとフォーカスが外れることがあるため1秒待機
+                    email_field = page.locator("#signIn\\.orderLookUp\\.emailAddress")
+                    email_field.click()
+                    time.sleep(1.0)
+                    email_field.fill(email)
+                    time.sleep(0.5)
+                    # 入力内容が正しいか検証（途中でフォーカスが外れた場合の対策）
+                    if email_field.input_value() != email:
+                        email_field.fill(email)
+                    
+                    order_field = page.locator("#signIn\\.orderLookUp\\.orderNumber")
+                    order_field.click()
+                    time.sleep(1.0)
+                    order_field.fill(order_number)
+                    time.sleep(0.5)
+                    if order_field.input_value() != order_number:
+                        order_field.fill(order_number)
+                    time.sleep(1.0)
                     
                     # 検索ボタンをクリック
                     page.click("#signIn\\.orderLookUp\\.guestUserOrderLookUp")
                     
+                    
                     # 画面が切り替わるまで少し待機（2秒）
                     time.sleep(2)
-                    # 注文詳細ページの読み込み完了を待機 (特定の要素が出現するのを待つなど状況により調整)
+                    # 注文詳細ページまたはエラー表示の読み込み完了を待機 
                     try:
+                        page.wait_for_selector('h1, .rs-guest-order-details, .as-l-container, .rs-alert', timeout=15000)
                         page.wait_for_load_state("networkidle", timeout=10000)
                     except:
                          pass
@@ -225,30 +256,24 @@ def check_orders():
                             date_text = all_dates[-1]
                     # --- ステータス抽出 ---
                     status_text = ""
-                    if "お探しのページが見つかりません" in page_text or "入力された情報と一致するご注文が見つかりません" in page_text or "正しいメールアドレスを入力" in page_text:
-                        status_text = "エラー: 注文が見つかりません"
-                        date_text = ""
+                    if "見つかりません" in page_text or "正しいメールアドレス" in page_text:
+                        raise Exception(f"404エラーまたは注文見つからないエラーを検知しました (Bot検知や入力速度判定の可能性)。")
+                        
                     elif "キャンセル済み" in page_text:
                         status_text = "キャンセル済み"
                         date_text = "" # キャンセルの場合は日付不要
                     else:
-                        # 進行中のステータスを探す (Appleのプログレスバー仕様に対応)
+                        reached_phases = []
                         for i, line in enumerate(text_lines):
-                            if line == "(進行中)" and i > 0:
-                                status_text = text_lines[i-1]
-                                break
-                        
-                        # 進行中が見つからない場合(すべて完了している場合など)
-                        if not status_text:
-                            completed_statuses = []
-                            for i, line in enumerate(text_lines):
-                                if line in ["注文確定", "処理中", "配送準備中", "出荷完了", "配送済み"]:
-                                    if i+1 < len(text_lines) and text_lines[i+1] == "(完了)":
-                                        completed_statuses.append(line)
-                            
-                            if completed_statuses:
-                                # 進行状態が一番進んでいる一番最後のものを取得
-                                status_text = completed_statuses[-1]
+                            if line in ["注文確定", "処理中", "配送準備中", "出荷完了", "配送済み"]:
+                                if i+1 < len(text_lines):
+                                    next_line = text_lines[i+1]
+                                    if next_line in ["(完了)", "(進行中)", "（完了）", "（進行中）"]:
+                                        reached_phases.append(line)
+                                        
+                        if reached_phases:
+                            # 一番最後のものが現在の最新ステータス
+                            status_text = reached_phases[-1]
                                     
                         if not status_text:
                             # プログレスバーがない場合の最終手段
@@ -256,7 +281,11 @@ def check_orders():
                             elif "出荷完了" in page_text: status_text = "出荷完了"
                             elif "配送準備中" in page_text: status_text = "配送準備中"
                             elif "処理中" in page_text: status_text = "処理中"
-                            else: status_text = "注文確定"
+                            elif "注文確定" in page_text: status_text = "注文確定"
+                            
+                    if not status_text:
+                        # ページに注文情報が含まれていない（Bot検知やロードエラー）
+                        raise Exception("ページから注文ステータスを検出できませんでした（HTMLの不完全な読み込み、またはBot検知等の可能性）")
     
                     # --- 機種情報 (機種名、ギガ数、色、台数) の抽出 ---
                     model_text, capacity_text, color_text, qty_text = "", "", "", ""
@@ -310,12 +339,66 @@ def check_orders():
                     if attempt < 2:
                         print("    -> 5秒後に再試行します...")
                         time.sleep(5)
+                finally:
+                    try:
+                        context.close()
+                    except:
+                        pass
             
             if not success:
-                status_text = "エラー: 取得失敗(リトライ上限)"
-                date_text = ""
-                model_text, capacity_text, color_text, qty_text = "", "", "", ""
+                if order_number in previous_results:
+                    print(f"    -> 全ての再試行に失敗したため、前回の状態をそのまま保持します。")
+                    prev_row = previous_results[order_number]
+                    row["注文状況"] = prev_row.get("注文状況", "").strip()
+                    row["日付"] = prev_row.get("日付", "")
+                    row["機種名"] = prev_row.get("機種名", "")
+                    row["ギガ数"] = prev_row.get("ギガ数", "")
+                    row["色"] = prev_row.get("色", "")
+                    row["台数"] = prev_row.get("台数", "")
+                else:
+                    print(f"    -> 全ての再試行に失敗しました。")
+                    row["注文状況"] = "エラー: 取得失敗(リトライ上限)"
+                    row["日付"] = ""
+                    row["機種名"] = ""
+                    row["ギガ数"] = ""
+                    row["色"] = ""
+                    row["台数"] = ""
+                
+                results.append(row)
+                time.sleep(1)
+                continue
             
+            # --- ステータスの逆戻りを防止する処理 ---
+            if order_number in previous_results:
+                prev_row = previous_results[order_number]
+                prev_status = prev_row.get("注文状況", "").strip()
+                
+                # 進捗のレベルを定義
+                status_levels = {
+                    "注文確定": 1,
+                    "処理中": 2,
+                    "配送準備中": 3,
+                    "出荷完了": 4,
+                    "配送済み": 5,
+                    "キャンセル済み": 99
+                }
+                
+                new_level = status_levels.get(status_text, 0)
+                old_level = status_levels.get(prev_status, 0)
+                
+                # エラーや、古い段階のステータス（「出荷完了」なのに「処理中」と判定された等）を弾く
+                if old_level > 0 and new_level < old_level and status_text != "キャンセル済み":
+                    print(f"    -> ステータス逆戻り検知: '{status_text}' は前回の '{prev_status}' より前のため、前回のステータスを維持します。")
+                    status_text = prev_status
+                    
+                    # 機種情報などが今回取得できていなければ、前回の情報を補完する
+                    if not model_text: model_text = prev_row.get("機種名", "")
+                    if not capacity_text: capacity_text = prev_row.get("ギガ数", "")
+                    if not color_text: color_text = prev_row.get("色", "")
+                    if not qty_text: qty_text = prev_row.get("台数", "")
+                    if not date_text: date_text = prev_row.get("日付", "")
+            # --------------------------------------
+
             # 結果を保存リストに追加
             row["注文状況"] = status_text
             row["日付"] = date_text
@@ -328,7 +411,10 @@ def check_orders():
             # 連続アクセスでブロックされないよう少し待機
             time.sleep(1)
 
-        browser.close()
+        try:
+            browser.close()
+        except:
+            pass
 
     # 結果を新しいCSVに保存
     print(">>> 結果を保存しています...")

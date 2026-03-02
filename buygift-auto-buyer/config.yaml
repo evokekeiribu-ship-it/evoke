@@ -1,0 +1,23 @@
+# BUYGIFT自動購入BOT 設定ファイル
+
+login:
+  email: "sedotenbai@gmail.com"      # BUYGIFTのログインメールアドレス
+  password: "wsxNJmk0"               # BUYGIFTのログインパスワード
+
+app:
+  target_url: "https://buygift.app/exhibitions/2"
+  check_interval: 3                  # 監視間隔（秒）
+
+purchase_conditions:
+  min_price: 25000                   # 購入する額面の下限（例: 25000円以上）
+  max_price: 100000                  # 購入する額面の上限（例: 100000円以下）
+  min_discount_rate: 0.0             # テストのため割引率の下限を0%に設定
+  # allowed_sellers: []              # 指定したい出品者がいる場合はリストで記述（例: ["SellerA", "SellerB"]） 空リストの場合は全体対象
+
+notification:
+  # LINE Notifyのトークン（取得が簡単です）。空にすると通知しません。
+  line_notify_token: ""
+  
+  # （オプション）LINE Messaging APIを利用する場合はこちらに入力
+  line_channel_access_token: "b64frT8W42B2iEfyL31QdZdw6s8tywPQGH9JBeE1VsyFaN7oPRh0w1rXAUiGLq75oZlWF9sQ0IK5r0emrw14HeIaZ/CudE5DcAQs9dceCLPf9sceuU3cj28NzG5ODveR/0rr4I5Kuowd5LyY45r70AdB04t89/1O/w1cDnyilFU="
+  line_user_id: "U271592e02ec59829d590590021916744"
