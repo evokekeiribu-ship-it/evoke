@@ -211,6 +211,17 @@ async function handleEvent(event) {
                     return resolve(null);
                 }
 
+                // 単価調整ルール: 20000円以上 → -100円、20000円未満 → -20円
+                parsedData.items = parsedData.items.map(it => {
+                    const adjustment = it.unit >= 20000 ? -100 : -20;
+                    const adjustedUnit = it.unit + adjustment;
+                    return {
+                        ...it,
+                        unit: adjustedUnit,
+                        total: adjustedUnit * it.qty
+                    };
+                });
+
                 // 4. 確認メッセージの生成
                 let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
                 let total = 0;
