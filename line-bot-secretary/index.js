@@ -31,6 +31,8 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const userChats = {};
 // ピック依頼用の状態管理オブジェクト
 const userStates = {};
+// 画像処理キュー（ユーザーごと）
+const userQueues = {};
 
 // 画像の一時保存用ディレクトリ
 const rootDir = path.dirname(__dirname); // __dirname is line-bot-secretary, rootDir is deveropment
@@ -158,6 +160,84 @@ async function parseImageWithGemini(imagePath) {
     return parsed;
 }
 
+// ============================
+// キュー処理
+// ============================
+async function processImageItem(userId, fileId) {
+    userStates[userId] = { state: 'processing' };
+
+    const queueLen = (userQueues[userId] || []).length;
+    const queueMsg = queueLen > 0 ? `（残り${queueLen}枚待機中）` : '';
+    await lineWorksApi.sendTextMessage(userId, `【システム】レシート画像を認識しました！請求書を作成しています...⏳${queueMsg}`).catch(e => console.error(e));
+
+    try {
+        if (!fs.existsSync(invoiceInDir)) {
+            fs.mkdirSync(invoiceInDir, { recursive: true });
+        }
+
+        const imagePath = path.join(invoiceInDir, `${fileId}.jpg`);
+        await lineWorksApi.downloadImage(fileId, imagePath);
+
+        console.log("画像の保存が完了しました。Gemini Vision APIでOCRを実行します。");
+
+        let parsedData = null;
+        try {
+            parsedData = await parseImageWithGemini(imagePath);
+        } catch (geminiErr) {
+            console.error(`Gemini OCRエラー: ${geminiErr.message}`);
+            await lineWorksApi.sendTextMessage(userId, `【エラー】画像の読み取りに失敗しました💦\n${geminiErr.message}`).catch(e => console.error(e));
+            finishAndProcessNext(userId);
+            return;
+        }
+
+        if (!parsedData || !parsedData.items || parsedData.items.length === 0) {
+            await lineWorksApi.sendTextMessage(userId, "【システム】レシートから商品を読み取れませんでした💦\n明るい場所で撮り直すか、「請求書」と送信して手動作成をお試しください。").catch(e => console.error(e));
+            finishAndProcessNext(userId);
+            return;
+        }
+
+        // 単価調整ルール: 20000円以上 → -100円、20000円未満 → -20円
+        parsedData.items = parsedData.items.map(it => {
+            const rawUnit = parseInt(String(it.unit).replace(/[^0-9]/g, ''), 10) || 0;
+            const rawQty = parseInt(String(it.qty).replace(/[^0-9]/g, ''), 10) || 1;
+            const adjustment = rawUnit >= 20000 ? -100 : -20;
+            const adjustedUnit = rawUnit + adjustment;
+            console.log(`[単価調整] ${it.name}: ${rawUnit}円 → ${adjustedUnit}円 (${adjustment > 0 ? '+' : ''}${adjustment})`);
+            return { ...it, unit: adjustedUnit, qty: rawQty, total: adjustedUnit * rawQty };
+        });
+
+        let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
+        let total = 0;
+        parsedData.items.forEach(it => {
+            confirmText += `- ${it.name} ${it.qty}個 @¥${it.unit.toLocaleString()} = ¥${it.total.toLocaleString()}\n`;
+            total += it.total;
+        });
+        confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
+
+        await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
+
+        userStates[userId] = {
+            state: 'awaiting_ocr_confirm',
+            invoiceData: parsedData,
+            fileId: fileId
+        };
+
+    } catch (err) {
+        console.error("画像処理エラー:", err);
+        await lineWorksApi.sendTextMessage(userId, "【エラー】処理中に予期せぬエラーが発生しました💦").catch(e => console.error(e));
+        finishAndProcessNext(userId);
+    }
+}
+
+function finishAndProcessNext(userId) {
+    delete userStates[userId];
+    if (userQueues[userId] && userQueues[userId].length > 0) {
+        const nextFileId = userQueues[userId].shift();
+        console.log(`[キュー] 次の画像を処理開始: ${nextFileId} (残り: ${userQueues[userId].length}枚)`);
+        processImageItem(userId, nextFileId).catch(e => console.error("キュー処理エラー:", e));
+    }
+}
+
 // 4. メッセージ受信時の処理
 async function handleEvent(event) {
     if (!event.content || !event.source) {
@@ -169,91 +249,20 @@ async function handleEvent(event) {
 
     // --- 画像メッセージ（請求書作成）の処理 ---
     if (event.content.type === 'image') {
-        return new Promise(async (resolve) => {
-            console.log("👉 LINE WORKSから画像を受信しました！請求書作成を開始します。");
+        const fileId = event.content.fileId;
+        const isIdle = !userStates[userId] || !userStates[userId].state;
 
-            // 処理中に移行
-            userStates[userId] = { state: 'processing' };
-
-            await lineWorksApi.sendTextMessage(userId, "【システム】レシート画像を認識しました！請求書を作成しています...⏳").catch(e => console.error(e));
-
-            try {
-                // 1. 請求書作成依頼フォルダ内を空にする（古い画像を消す）
-                if (!fs.existsSync(invoiceInDir)) {
-                    fs.mkdirSync(invoiceInDir, { recursive: true });
-                }
-                const oldFiles = fs.readdirSync(invoiceInDir);
-                for (const file of oldFiles) {
-                    fs.unlinkSync(path.join(invoiceInDir, file));
-                }
-
-                // 2. LINE WORKSから画像をダウンロードして保存
-                const fileId = event.content.fileId;
-                const imagePath = path.join(invoiceInDir, `${fileId}.jpg`);
-                await lineWorksApi.downloadImage(fileId, imagePath);
-
-                console.log("画像の保存が完了しました。Gemini Vision APIでOCRを実行します。");
-
-                // 3. Gemini Vision APIでOCR（B案）
-                let parsedData = null;
-                try {
-                    parsedData = await parseImageWithGemini(imagePath);
-                } catch (geminiErr) {
-                    console.error(`Gemini OCRエラー: ${geminiErr.message}`);
-                    await lineWorksApi.sendTextMessage(userId, `【エラー】画像の読み取りに失敗しました💦\n${geminiErr.message}`).catch(e => console.error(e));
-                    delete userStates[userId];
-                    return resolve(null);
-                }
-
-                if (!parsedData || !parsedData.items || parsedData.items.length === 0) {
-                    await lineWorksApi.sendTextMessage(userId, "【システム】レシートから商品を読み取れませんでした💦\n明るい場所で撮り直すか、「請求書」と送信して手動作成をお試しください。").catch(e => console.error(e));
-                    delete userStates[userId];
-                    return resolve(null);
-                }
-
-                // 単価調整ルール: 20000円以上 → -100円、20000円未満 → -20円
-                parsedData.items = parsedData.items.map(it => {
-                    const rawUnit = parseInt(String(it.unit).replace(/[^0-9]/g, ''), 10) || 0;
-                    const rawQty = parseInt(String(it.qty).replace(/[^0-9]/g, ''), 10) || 1;
-                    const adjustment = rawUnit >= 20000 ? -100 : -20;
-                    const adjustedUnit = rawUnit + adjustment;
-                    console.log(`[単価調整] ${it.name}: ${rawUnit}円 → ${adjustedUnit}円 (${adjustment > 0 ? '+' : ''}${adjustment})`);
-                    return {
-                        ...it,
-                        unit: adjustedUnit,
-                        qty: rawQty,
-                        total: adjustedUnit * rawQty
-                    };
-                });
-
-                // 4. 確認メッセージの生成
-                let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
-                let total = 0;
-                parsedData.items.forEach(it => {
-                    confirmText += `- ${it.name} ${it.qty}個 @¥${it.unit.toLocaleString()} = ¥${it.total.toLocaleString()}\n`;
-                    total += it.total;
-                });
-
-                confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
-
-                await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
-
-                // 5. 状態の更新
-                userStates[userId] = {
-                    state: 'awaiting_ocr_confirm',
-                    invoiceData: parsedData,
-                    fileId: fileId
-                };
-
-                resolve(null);
-
-            } catch (err) {
-                console.error("画像処理エラー:", err);
-                await lineWorksApi.sendTextMessage(userId, "【エラー】処理中に予期せぬエラーが発生しました💦").catch(e => console.error(e));
-                delete userStates[userId];
-                resolve(null);
-            }
-        });
+        if (isIdle) {
+            console.log("👉 LINE WORKSから画像を受信しました！即時処理開始。");
+            processImageItem(userId, fileId).catch(e => console.error("画像処理エラー:", e));
+        } else {
+            if (!userQueues[userId]) userQueues[userId] = [];
+            userQueues[userId].push(fileId);
+            const pos = userQueues[userId].length;
+            console.log(`👉 画像をキューに追加: ${fileId} (位置: ${pos})`);
+            await lineWorksApi.sendTextMessage(userId, `【システム】画像を受け取りました📩 現在処理中のため、順番待ちキューに追加しました（${pos}枚待機中）`).catch(e => console.error(e));
+        }
+        return Promise.resolve(null);
     }
 
     // テキスト以外のメッセージは無視する
@@ -271,7 +280,7 @@ async function handleEvent(event) {
     // --- キャンセル処理 ---
     if (userMessage === "キャンセル") {
         if (userStates[userId]) {
-            delete userStates[userId];
+            finishAndProcessNext(userId);
             return lineWorksApi.sendTextMessage(userId, "【システム】処理をキャンセルしました。最初からやり直してください😊");
         }
     }
@@ -314,7 +323,7 @@ async function handleEvent(event) {
         const isNo = userMessage === '2' || userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no';
 
         if (isYes) {
-            delete userStates[userId];
+            finishAndProcessNext(userId);
             try {
                 if (fs.existsSync(invoiceInDir)) {
                     const oldFiles = fs.readdirSync(invoiceInDir);
@@ -328,12 +337,12 @@ async function handleEvent(event) {
                 return lineWorksApi.sendTextMessage(userId, "【システム】画像の削除中にエラーが発生しました💦");
             }
         } else if (isNo) {
-            delete userStates[userId];
+            finishAndProcessNext(userId);
             return lineWorksApi.sendTextMessage(userId, "【システム】元画像を保持します。📂");
         } else {
             // 1,2 以外の関連しないメッセージが来た場合は状態をクリアして、下のGeminiに流す
             console.log("DEBUG: fallthrough for unrecognized message in delete prompt:", userMessage);
-            delete userStates[userId];
+            finishAndProcessNext(userId);
         }
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_ocr_confirm') {
@@ -357,7 +366,7 @@ async function handleEvent(event) {
                         console.error(`実行エラー: ${error.message}\n${stderr}`);
                         let errDetails = stderr ? stderr.substring(0, 500) : error.message.substring(0, 500);
                         await lineWorksApi.sendTextMessage(userId, `【システムエラー詳細】\nPDF生成に失敗しました。\n\n詳細:\n${errDetails}\n\nこの画面をスクショして開発者に送付してください💦`).catch(e => console.error(e));
-                        delete userStates[userId];
+                        finishAndProcessNext(userId);
                         return resolve(null);
                     }
 
@@ -365,7 +374,7 @@ async function handleEvent(event) {
                     let pdfPathMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
                     if (!pdfPathMatch || !pdfPathMatch[1]) {
                         await lineWorksApi.sendTextMessage(userId, "【システム】PDFが見つかりませんでした💦").catch(e => console.error(e));
-                        delete userStates[userId];
+                        finishAndProcessNext(userId);
                         return resolve(null);
                     }
 
@@ -382,7 +391,7 @@ async function handleEvent(event) {
                 });
             });
         } else if (isNo) {
-            delete userStates[userId];
+            finishAndProcessNext(userId);
             return lineWorksApi.sendTextMessage(userId, "【システム】作成をキャンセルしました。手動で作成する場合は「請求書」と送信してください。");
         } else {
             return new Promise(async (resolve) => {
