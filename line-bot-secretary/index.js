@@ -213,12 +213,16 @@ async function handleEvent(event) {
 
                 // 単価調整ルール: 20000円以上 → -100円、20000円未満 → -20円
                 parsedData.items = parsedData.items.map(it => {
-                    const adjustment = it.unit >= 20000 ? -100 : -20;
-                    const adjustedUnit = it.unit + adjustment;
+                    const rawUnit = parseInt(String(it.unit).replace(/[^0-9]/g, ''), 10) || 0;
+                    const rawQty = parseInt(String(it.qty).replace(/[^0-9]/g, ''), 10) || 1;
+                    const adjustment = rawUnit >= 20000 ? -100 : -20;
+                    const adjustedUnit = rawUnit + adjustment;
+                    console.log(`[単価調整] ${it.name}: ${rawUnit}円 → ${adjustedUnit}円 (${adjustment > 0 ? '+' : ''}${adjustment})`);
                     return {
                         ...it,
                         unit: adjustedUnit,
-                        total: adjustedUnit * it.qty
+                        qty: rawQty,
+                        total: adjustedUnit * rawQty
                     };
                 });
 
@@ -226,7 +230,7 @@ async function handleEvent(event) {
                 let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
                 let total = 0;
                 parsedData.items.forEach(it => {
-                    confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
+                    confirmText += `- ${it.name} ${it.qty}個 @¥${it.unit.toLocaleString()} = ¥${it.total.toLocaleString()}\n`;
                     total += it.total;
                 });
 
