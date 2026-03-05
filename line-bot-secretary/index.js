@@ -106,29 +106,32 @@ async function parseImageWithGemini(imagePath) {
     const deadlineStr = deadlineDate.toISOString().split('T')[0];
 
     const prompt = `この画像は商品の仕入れリスト・発注書・納品書・レシートです。
-画像に記載されている全ての商品を漏れなく読み取り、以下のJSONフォーマットのみを返してください。
+まず画像の商品テーブルに何行あるか数えてください。
+次に、その全ての行を漏れなく読み取り、以下のJSONフォーマットのみを返してください。
 
 {
   "today": "${todayStr}",
   "deadline": "${deadlineStr}",
   "items": [
     {
-      "name": "商品名（略さず正確に記載）",
-      "unit": 単価（税抜き、整数のみ）,
+      "name": "商品名（画像の通り正確に記載。略さない）",
+      "unit": 単価（画像に記載された金額そのまま、整数のみ）,
       "qty": 数量（整数のみ）,
       "total": 合計（単価×数量、整数のみ）
     }
   ]
 }
 
-注意事項：
-- 全商品を漏れなく読み取ること（Switch Sports、ジョイコン、ゼルダ等も含む）
-- 商品名は画像の通り正確に記載
-- 金額は税抜き価格で記載
-- JSONのみ出力（マークダウン記法不要）`;
+厳守事項：
+- テーブルの全行を必ず読み取ること（1行も飛ばさない）
+- Switch Sports、ジョイコン、ゼルダ、NS2、メガシンフォニアなど略称の商品も全て含める
+- 商品名は画像の記載通りに正確に書く（省略・変換しない）
+- 金額は画像に書いてある数値をそのまま使う（計算しない）
+- JSONのみ出力（マークダウン記法・コードブロック不要）
+- items配列を途中で切らない（全商品を含めること）`;
 
     const response = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         contents: [
             {
                 parts: [
@@ -143,8 +146,7 @@ async function parseImageWithGemini(imagePath) {
             }
         ],
         config: {
-            temperature: 0.1,
-            responseMimeType: 'application/json'
+            temperature: 0.1
         }
     });
 
