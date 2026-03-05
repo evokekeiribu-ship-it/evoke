@@ -90,6 +90,72 @@ app.get('/download-order/:filename', (req, res) => {
     }
 });
 
+// ============================
+// Gemini Vision APIで画像OCR
+// ============================
+async function parseImageWithGemini(imagePath) {
+    const imageData = fs.readFileSync(imagePath);
+    const base64Image = imageData.toString('base64');
+    const ext = path.extname(imagePath).toLowerCase();
+    const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
+
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const deadlineDate = new Date(today);
+    deadlineDate.setDate(deadlineDate.getDate() + 7);
+    const deadlineStr = deadlineDate.toISOString().split('T')[0];
+
+    const prompt = `この画像は商品の仕入れリスト・発注書・納品書・レシートです。
+画像に記載されている全ての商品を漏れなく読み取り、以下のJSONフォーマットのみを返してください。
+
+{
+  "today": "${todayStr}",
+  "deadline": "${deadlineStr}",
+  "items": [
+    {
+      "name": "商品名（略さず正確に記載）",
+      "unit": 単価（税抜き、整数のみ）,
+      "qty": 数量（整数のみ）,
+      "total": 合計（単価×数量、整数のみ）
+    }
+  ]
+}
+
+注意事項：
+- 全商品を漏れなく読み取ること（Switch Sports、ジョイコン、ゼルダ等も含む）
+- 商品名は画像の通り正確に記載
+- 金額は税抜き価格で記載
+- JSONのみ出力（マークダウン記法不要）`;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: [
+            {
+                parts: [
+                    { text: prompt },
+                    {
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: base64Image
+                        }
+                    }
+                ]
+            }
+        ],
+        config: {
+            temperature: 0.1,
+            responseMimeType: 'application/json'
+        }
+    });
+
+    let jsonStr = response.text;
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) jsonStr = jsonMatch[0];
+
+    const parsed = JSON.parse(jsonStr);
+    return parsed;
+}
+
 // 4. メッセージ受信時の処理
 async function handleEvent(event) {
     if (!event.content || !event.source) {
@@ -124,73 +190,45 @@ async function handleEvent(event) {
                 const imagePath = path.join(invoiceInDir, `${fileId}.jpg`);
                 await lineWorksApi.downloadImage(fileId, imagePath);
 
-                console.log("画像の保存が完了しました。Pythonスクリプトを実行します。");
+                console.log("画像の保存が完了しました。Gemini Vision APIでOCRを実行します。");
 
-                // 3. Pythonスクリプトの実行
-                const scriptPath = path.join(rootDir, '請求書作成', 'App_Core', 'batch_gen.py');
-                const workDir = path.dirname(scriptPath);
-                const pythonExe = process.env.PYTHON_CMD || 'python';
+                // 3. Gemini Vision APIでOCR（B案）
+                let parsedData = null;
+                try {
+                    parsedData = await parseImageWithGemini(imagePath);
+                } catch (geminiErr) {
+                    console.error(`Gemini OCRエラー: ${geminiErr.message}`);
+                    await lineWorksApi.sendTextMessage(userId, `【エラー】画像の読み取りに失敗しました💦\n${geminiErr.message}`).catch(e => console.error(e));
+                    delete userStates[userId];
+                    return resolve(null);
+                }
 
-                // 環境変数を明示的に渡す (Render対応)
-                const execOptions = {
-                    cwd: workDir,
-                    env: { ...process.env }
+                if (!parsedData || !parsedData.items || parsedData.items.length === 0) {
+                    await lineWorksApi.sendTextMessage(userId, "【システム】レシートから商品を読み取れませんでした💦\n明るい場所で撮り直すか、「請求書」と送信して手動作成をお試しください。").catch(e => console.error(e));
+                    delete userStates[userId];
+                    return resolve(null);
+                }
+
+                // 4. 確認メッセージの生成
+                let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
+                let total = 0;
+                parsedData.items.forEach(it => {
+                    confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
+                    total += it.total;
+                });
+
+                confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
+
+                await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
+
+                // 5. 状態の更新
+                userStates[userId] = {
+                    state: 'awaiting_ocr_confirm',
+                    invoiceData: parsedData,
+                    fileId: fileId
                 };
 
-                execFile(pythonExe, [scriptPath, '--parse-only', imagePath], execOptions, async (error, stdout, stderr) => {
-                    if (error) {
-                        console.error(`実行エラー: ${error.message}`);
-                        console.error(`Pythonエラー (stderr): ${stderr}`);
-                        const safeErrorMessage = error.message.length > 500 ? error.message.substring(0, 500) + '...' : error.message;
-                        await lineWorksApi.sendTextMessage(userId, `【エラー】文字の読み取りに失敗しました💦\n${safeErrorMessage}`).catch(e => console.error(e));
-                        delete userStates[userId];
-                        return resolve(null);
-                    }
-
-                    // 4. JSONの抽出
-                    let parsedData = null;
-                    try {
-                        const match = stdout.match(/___JSON_START___\r?\n([\s\S]*?)\r?\n___JSON_END___/);
-                        if (match && match[1]) {
-                            parsedData = JSON.parse(match[1]);
-                        }
-                    } catch (e) {
-                        console.error("JSON parse error:", e);
-                    }
-
-                    if (!parsedData || !parsedData.items || parsedData.items.length === 0) {
-                        await lineWorksApi.sendTextMessage(userId, "【システム】レシートから商品を読み取れませんでした💦\n明るい場所で撮り直すか、「請求書」と送信して手動作成をお試しください。").catch(e => console.error(e));
-                        delete userStates[userId];
-                        return resolve(null);
-                    }
-
-                    // 5. 確認メッセージの生成
-                    let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
-                    let total = 0;
-                    let totalQty = 0;
-                    parsedData.items.forEach(it => {
-                        confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
-                        total += it.total;
-                        totalQty += it.qty;
-                    });
-
-                    if (parsedData.items.length === 0) {
-                        confirmText += "（商品が読み取れませんでした）\n";
-                    }
-
-                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
-
-                    await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
-
-                    // 6. 状態の更新
-                    userStates[userId] = {
-                        state: 'awaiting_ocr_confirm',
-                        invoiceData: parsedData,
-                        fileId: fileId
-                    };
-
-                    resolve(null);
-                });
+                resolve(null);
 
             } catch (err) {
                 console.error("画像処理エラー:", err);
