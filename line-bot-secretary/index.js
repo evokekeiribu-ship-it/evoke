@@ -300,6 +300,9 @@ async function handleEvent(event) {
             } else if (currentState === 'awaiting_manual_price') {
                 userStates[userId].state = 'awaiting_manual_content';
                 return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n内容を教えてください");
+            } else if (currentState === 'awaiting_manual_more') {
+                userStates[userId].state = 'awaiting_manual_qty';
+                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n個数を半角数字で教えてください");
             } else if (currentState === 'awaiting_manual_content') {
                 userStates[userId].state = 'awaiting_manual_dest';
                 return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n宛先を教えてください");
@@ -540,6 +543,7 @@ ${userMessage}`;
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_dest') {
         userStates[userId].manualDest = userMessage;
+        userStates[userId].manualItems = [];
         userStates[userId].state = 'awaiting_manual_content';
         return lineWorksApi.sendTextMessage(userId, "【システム】内容を教えてください");
 
@@ -562,20 +566,52 @@ ${userMessage}`;
         const mqts = parseInt(userMessage, 10);
         if (!isNaN(mqts) && mqts > 0) {
             userStates[userId].manualQty = mqts;
-            userStates[userId].state = 'awaiting_manual_tax';
-            return lineWorksApi.sendTextMessage(userId, "【システム】税込みですか？税抜きですか？\n(1: 税込み / 2: 税抜き)\n(半角の 1 か 2 を送信してください)");
+            userStates[userId].state = 'awaiting_manual_more';
+            const currentCount = (userStates[userId].manualItems || []).length + 1;
+            return lineWorksApi.sendTextMessage(userId, `【システム】${currentCount}品目を追加しました✅\n\n次の項目を追加しますか？\n1: 追加する\n2: これで完了（消費税確認へ）`);
         } else {
             return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 有効な数字（1以上）を入力してください。");
+        }
+
+    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_more') {
+        if (userMessage === '1') {
+            // 現在の商品をitemsに追加してループ
+            const price = userStates[userId].manualPrice;
+            const qty = userStates[userId].manualQty;
+            userStates[userId].manualItems.push({
+                name: userStates[userId].manualContent,
+                unit: price,
+                qty: qty,
+                total: price * qty
+            });
+            userStates[userId].manualContent = null;
+            userStates[userId].manualPrice = null;
+            userStates[userId].manualQty = null;
+            userStates[userId].state = 'awaiting_manual_content';
+            return lineWorksApi.sendTextMessage(userId, `【システム】では次の項目を入力してください。\n内容を教えてください`);
+        } else if (userMessage === '2') {
+            // 現在の商品をitemsに追加して消費税確認へ
+            const price = userStates[userId].manualPrice;
+            const qty = userStates[userId].manualQty;
+            userStates[userId].manualItems.push({
+                name: userStates[userId].manualContent,
+                unit: price,
+                qty: qty,
+                total: price * qty
+            });
+            userStates[userId].state = 'awaiting_manual_tax';
+            const items = userStates[userId].manualItems;
+            let summary = items.map((it, i) => `${i+1}. ${it.name} ${it.qty}個 ¥${it.unit.toLocaleString()}`).join('\n');
+            return lineWorksApi.sendTextMessage(userId, `【システム】合計${items.length}品目の入力が完了しました！\n\n${summary}\n\n税込みですか？税抜きですか？\n1: 税込み\n2: 税抜き`);
+        } else {
+            return lineWorksApi.sendTextMessage(userId, "【システム】1 か 2 を送信してください。");
         }
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_tax') {
         if (userMessage === '1' || userMessage === '2') {
             const taxType = userMessage;
-
             const dest = userStates[userId].manualDest;
-            const content = userStates[userId].manualContent;
-            const price = userStates[userId].manualPrice;
-            const qty = userStates[userId].manualQty;
+            const items = userStates[userId].manualItems;
 
             userStates[userId].state = 'processing';
 
@@ -586,56 +622,57 @@ ${userMessage}`;
                 const workDir = path.dirname(scriptPath);
                 const pythonExe = process.env.PYTHON_CMD || 'python';
 
-                const cmdArgs = `"${dest}" "${content}" "${price}" "${qty}" "${taxType}"`;
+                const payload = JSON.stringify({ dest, items, taxType });
 
-                // 環境変数を明示的に渡す (Render対応)
-                const execOptions = {
-                    cwd: workDir,
-                    env: { ...process.env }
-                };
+                const execOptions = { cwd: workDir, env: { ...process.env } };
 
-                exec(`"${pythonExe}" "${scriptPath}" ${cmdArgs}`, execOptions, async (error, stdout, stderr) => {
+                execFile(pythonExe, [scriptPath, '--items-json', payload], execOptions, async (error, stdout, stderr) => {
                     if (error) {
-                        console.error(`カスタム請求書実行エラー: ${error}`);
+                        console.error(`カスタム請求書実行エラー: ${error}\n${stderr}`);
                         await lineWorksApi.sendTextMessage(userId, `【エラー】カスタム請求書の作成に失敗しました💦\n${error.message}`).catch(e => console.error(e));
                         delete userStates[userId];
                         return resolve(null);
                     }
 
-                    // 作成済み請求書を探索
-                    let latestPdfPath = null;
-                    let latestTime = 0;
-                    let foundFilename = null;
-
-                    if (fs.existsSync(invoiceOutDir)) {
-                        const dateFolders = fs.readdirSync(invoiceOutDir);
-                        for (const dFolder of dateFolders) {
-                            const folderPath = path.join(invoiceOutDir, dFolder);
-                            if (fs.statSync(folderPath).isDirectory()) {
-                                const files = fs.readdirSync(folderPath);
-                                for (const file of files) {
-                                    if (file.endsWith('.pdf')) {
-                                        const filePath = path.join(folderPath, file);
-                                        const stat = fs.statSync(filePath);
-                                        if (stat.mtimeMs > latestTime) {
-                                            latestTime = stat.mtimeMs;
-                                            latestPdfPath = filePath;
-                                            foundFilename = file;
+                    let pdfPathMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
+                    if (!pdfPathMatch || !pdfPathMatch[1]) {
+                        // fallback: 最新ファイルを探索
+                        let latestPdfPath = null;
+                        let latestTime = 0;
+                        let foundFilename = null;
+                        if (fs.existsSync(invoiceOutDir)) {
+                            const dateFolders = fs.readdirSync(invoiceOutDir);
+                            for (const dFolder of dateFolders) {
+                                const folderPath = path.join(invoiceOutDir, dFolder);
+                                if (fs.statSync(folderPath).isDirectory()) {
+                                    const files = fs.readdirSync(folderPath);
+                                    for (const file of files) {
+                                        if (file.endsWith('.pdf')) {
+                                            const filePath = path.join(folderPath, file);
+                                            const stat = fs.statSync(filePath);
+                                            if (stat.mtimeMs > latestTime) {
+                                                latestTime = stat.mtimeMs;
+                                                latestPdfPath = filePath;
+                                                foundFilename = file;
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                        if (!latestPdfPath) {
+                            await lineWorksApi.sendTextMessage(userId, "【システム】PDFが見つかりませんでした💦").catch(e => console.error(e));
+                            delete userStates[userId];
+                            return resolve(null);
+                        }
+                        pdfPathMatch = [null, latestPdfPath];
                     }
 
-                    if (!latestPdfPath) {
-                        await lineWorksApi.sendTextMessage(userId, "【システム】スクリプトは成功しましたが、PDFが見つかりませんでした💦").catch(e => console.error(e));
-                        delete userStates[userId];
-                        return resolve(null);
-                    }
+                    const latestPdfPath = pdfPathMatch[1].trim();
+                    const foundFilename = path.basename(latestPdfPath);
 
-                    await lineWorksApi.sendTextMessage(userId, `【システム】${dest}御中 の請求書（注文確認）が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
-                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDF送信):", err.message || err));
+                    await lineWorksApi.sendTextMessage(userId, `【システム】${dest}御中 の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
+                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error:", err.message || err));
 
                     delete userStates[userId];
                     resolve(null);

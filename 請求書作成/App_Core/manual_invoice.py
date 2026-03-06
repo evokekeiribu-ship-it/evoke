@@ -15,24 +15,30 @@ OUT_DIR = os.path.join(BASE_DIR, "作成済み請求書")
 TEMPLATE_PATH = os.path.join(SCRIPT_DIR, "テンプレート.html")
 SEAL_PATH = os.path.join(SCRIPT_DIR, "seal_b64.txt")
 
-def generate_pdf(destination_name, content_name, unit_price, qty, tax_type):
+def generate_pdf(destination_name, content_name, unit_price, qty, tax_type, items_override=None):
     today = datetime.now()
     deadline = today + timedelta(days=7)
-    
-    # tax_type: '1' = 税込み, '2' = 税抜き
-    if tax_type == '1':
-        # 税込み価格が入力された場合、そのまま合計
-        total = unit_price * qty
-    else:
-        # 税抜き価格が入力された場合、消費税(10%)を加算
-        total = math.floor(unit_price * qty * 1.1)
 
-    items = [{
-        'name': content_name,
-        'unit': unit_price,
-        'qty': qty,
-        'total': total
-    }]
+    if items_override:
+        # 複数商品モード: items_overrideをそのまま使用
+        items = []
+        total = 0
+        for it in items_override:
+            u = int(it['unit'])
+            q = int(it['qty'])
+            if tax_type == '1':
+                t = u * q
+            else:
+                t = math.floor(u * q * 1.1)
+            items.append({'name': it['name'], 'unit': u, 'qty': q, 'total': t})
+            total += t
+    else:
+        # 単品モード（後方互換）
+        if tax_type == '1':
+            total = unit_price * qty
+        else:
+            total = math.floor(unit_price * qty * 1.1)
+        items = [{'name': content_name, 'unit': unit_price, 'qty': qty, 'total': total}]
 
     today_str = today.strftime('%Y%m%d')
     today_mmdd = today.strftime('%m月%d日')
@@ -161,19 +167,33 @@ def generate_pdf(destination_name, content_name, unit_price, qty, tax_type):
     return out_pdf_path
 
 if __name__ == "__main__":
-    if len(sys.argv) < 6:
-        print("エラー: 必要な引数が不足しています。(宛先, 内容, 単価, 数量, 税区分)")
-        sys.exit(1)
+    import json as _json
 
-    dest_choice = sys.argv[1].strip()
-    content_name = sys.argv[2].strip()
-    unit_price = int(sys.argv[3].strip())
-    qty = int(sys.argv[4].strip())
-    tax_type = sys.argv[5].strip()
-
-    try:
-        out_path = generate_pdf(dest_choice, content_name, unit_price, qty, tax_type)
-        print(f"\n生成完了: {out_path}")
-    except Exception as e:
-        print(f"\nエラーが発生しました: {e}")
-        sys.exit(1)
+    # --items-json モード（複数商品対応）
+    if len(sys.argv) >= 3 and sys.argv[1] == '--items-json':
+        try:
+            payload = _json.loads(sys.argv[2])
+            dest_choice = payload['dest']
+            items_data = payload['items']
+            tax_type = payload.get('taxType', '1')
+            out_path = generate_pdf(dest_choice, None, None, None, tax_type, items_override=items_data)
+            print(f"___PDF_GENERATED___:{out_path}")
+        except Exception as e:
+            print(f"エラーが発生しました: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # 従来の単品モード（後方互換）
+        if len(sys.argv) < 6:
+            print("エラー: 必要な引数が不足しています。(宛先, 内容, 単価, 数量, 税区分)")
+            sys.exit(1)
+        dest_choice = sys.argv[1].strip()
+        content_name = sys.argv[2].strip()
+        unit_price = int(sys.argv[3].strip())
+        qty = int(sys.argv[4].strip())
+        tax_type = sys.argv[5].strip()
+        try:
+            out_path = generate_pdf(dest_choice, content_name, unit_price, qty, tax_type)
+            print(f"___PDF_GENERATED___:{out_path}")
+        except Exception as e:
+            print(f"エラーが発生しました: {e}", file=sys.stderr)
+            sys.exit(1)
