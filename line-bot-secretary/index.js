@@ -387,8 +387,16 @@ async function handleEvent(event) {
                     await lineWorksApi.sendTextMessage(userId, "【システム】請求書が完成しました！✨\nPDFファイルを送信します...").catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error :", err));
 
-                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n(関係ないメッセージを送ると状態が解除されAIと会話できます)").catch(err => console.error(err));
+                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n（10秒以内に返答がない場合は自動でスキップします）").catch(err => console.error(err));
                     userStates[userId] = { state: 'awaiting_image_delete' };
+
+                    // 10秒後にキューを自動で進める
+                    setTimeout(() => {
+                        if (userStates[userId] && userStates[userId].state === 'awaiting_image_delete') {
+                            console.log(`[タイムアウト] ${userId} の画像削除確認がタイムアウト → キューを進めます`);
+                            finishAndProcessNext(userId);
+                        }
+                    }, 10000);
 
                     resolve(null);
                 });
