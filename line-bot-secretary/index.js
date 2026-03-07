@@ -39,6 +39,53 @@ const rootDir = path.dirname(__dirname); // __dirname is line-bot-secretary, roo
 const invoiceInDir = path.join(rootDir, '請求書作成', '請求書作成依頼');
 const invoiceOutDir = path.join(rootDir, '請求書作成', '作成済み請求書');
 
+// Discord PDF保存チャンネル
+const DISCORD_SAVE_CHANNEL_ID = '1479775022808563854';
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+
+async function sendPdfToDiscord(pdfPath, label) {
+    if (!DISCORD_BOT_TOKEN) return;
+    try {
+        const fileData = fs.readFileSync(pdfPath);
+        const filename = path.basename(pdfPath);
+        const boundary = '----FormBoundary' + Date.now().toString(16);
+        const nl = '\r\n';
+        const caption = `📄 ${label}`;
+        let body = '';
+        body += `--${boundary}${nl}`;
+        body += `Content-Disposition: form-data; name="content"${nl}${nl}`;
+        body += `${caption}${nl}`;
+        body += `--${boundary}${nl}`;
+        body += `Content-Disposition: form-data; name="file"; filename="${filename}"${nl}`;
+        body += `Content-Type: application/pdf${nl}${nl}`;
+        const prefix = Buffer.from(body, 'utf8');
+        const suffix = Buffer.from(`${nl}--${boundary}--${nl}`, 'utf8');
+        const payload = Buffer.concat([prefix, fileData, suffix]);
+
+        await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: 'discord.com',
+                path: `/api/v10/channels/${DISCORD_SAVE_CHANNEL_ID}/messages`,
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bot ${DISCORD_BOT_TOKEN}`,
+                    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                    'Content-Length': payload.length
+                }
+            }, (res) => {
+                let data = '';
+                res.on('data', d => data += d);
+                res.on('end', () => { console.log(`Discord保存完了: ${filename} (${res.statusCode})`); resolve(); });
+            });
+            req.on('error', (e) => { console.error('Discord送信エラー:', e); resolve(); });
+            req.write(payload);
+            req.end();
+        });
+    } catch (e) {
+        console.error('Discord PDF送信例外:', e);
+    }
+}
+
 // 3. Webhookエンドポイント（LINE WORKSからのメッセージを受け取る場所）
 app.post('/webhook', async (req, res) => {
     // 常に200 OKを素早く返す
@@ -457,6 +504,7 @@ async function handleEvent(event) {
                     const completedLabel = savedDocType === 'payment' ? '支払い通知書' : '請求書';
                     await lineWorksApi.sendTextMessage(userId, `【システム】${completedLabel}が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error :", err));
+                    sendPdfToDiscord(latestPdfPath, `${completedLabel}：${foundFilename}`).catch(e => console.error(e));
 
                     await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n（10秒以内に返答がない場合は自動でスキップします）").catch(err => console.error(err));
                     userStates[userId] = { state: 'awaiting_image_delete' };
@@ -603,6 +651,7 @@ ${userMessage}`;
 
                     await lineWorksApi.sendTextMessage(userId, `【システム】${destName}宛 (${qty}個) の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDF送信):", err.message || err));
+                    sendPdfToDiscord(latestPdfPath, `請求書：${foundFilename}`).catch(e => console.error(e));
 
                     // ※LINE WORKS のローディングスピナー対策：ファイル送信直後に明示的にテキストメッセージを添える
                     await lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の作成が完了しました！🧾").catch(e => console.error(e));
@@ -752,6 +801,7 @@ ${userMessage}`;
 
                     await lineWorksApi.sendTextMessage(userId, `【システム】${dest}御中 の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error:", err.message || err));
+                    sendPdfToDiscord(latestPdfPath, `請求書：${foundFilename}`).catch(e => console.error(e));
 
                     delete userStates[userId];
                     resolve(null);
