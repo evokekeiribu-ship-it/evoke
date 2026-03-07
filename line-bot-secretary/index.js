@@ -1,12 +1,16 @@
 require('dotenv').config();
+console.log('[1] dotenv OK');
 const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
+console.log('[2] discord.js OK');
 const { GoogleGenAI } = require('@google/genai');
+console.log('[3] genai OK');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { exec, execFile } = require('child_process');
 const axios = require('axios');
 const express = require('express');
+console.log('[4] all imports OK');
 
 // ============================================================
 // 設定
