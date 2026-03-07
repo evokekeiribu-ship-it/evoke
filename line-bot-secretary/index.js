@@ -304,7 +304,12 @@ async function handleEvent(event) {
             const currentState = userStates[userId].state;
 
             // 請求書作成フローの巻き戻し
-            if (currentState === 'awaiting_manual_tax') {
+            if (currentState === 'awaiting_manual_deadline') {
+                userStates[userId].state = 'awaiting_manual_tax';
+                const items = userStates[userId].manualItems || [];
+                let summary = items.map((it, i) => `${i+1}. ${it.name} ${it.qty}個 ¥${it.unit.toLocaleString()}`).join('\n');
+                return lineWorksApi.sendTextMessage(userId, `【システム】1つ前の項目に戻ります。\n\n${summary}\n\n税込みですか？税抜きですか？\n1: 税込み\n2: 税抜き`);
+            } else if (currentState === 'awaiting_manual_tax') {
                 userStates[userId].state = 'awaiting_manual_qty';
                 return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n個数を半角数字で教えてください");
             } else if (currentState === 'awaiting_manual_qty') {
@@ -683,9 +688,19 @@ ${userMessage}`;
 
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_tax') {
         if (userMessage === '1' || userMessage === '2') {
-            const taxType = userMessage;
+            userStates[userId].manualTaxType = userMessage;
+            userStates[userId].state = 'awaiting_manual_deadline';
+            return lineWorksApi.sendTextMessage(userId, "【システム】支払い期日を選択してください👇\n1: 作成日から1週間後\n2: 当月末\n3: 翌月末");
+        } else {
+            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1 または 2 を入力してください。\n（やめる場合は「キャンセル」と入力）");
+        }
+
+    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_deadline') {
+        if (['1', '2', '3'].includes(userMessage)) {
+            const taxType = userStates[userId].manualTaxType;
             const dest = userStates[userId].manualDest;
             const items = userStates[userId].manualItems;
+            const deadlineType = userMessage; // '1'=1週間後 '2'=当月末 '3'=翌月末
 
             userStates[userId].state = 'processing';
 
@@ -696,7 +711,7 @@ ${userMessage}`;
                 const workDir = path.dirname(scriptPath);
                 const pythonExe = process.env.PYTHON_CMD || 'python';
 
-                const payload = JSON.stringify({ dest, items, taxType });
+                const payload = JSON.stringify({ dest, items, taxType, deadlineType });
 
                 const execOptions = { cwd: workDir, env: { ...process.env } };
 
@@ -753,7 +768,7 @@ ${userMessage}`;
                 });
             });
         } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1 または 2 を入力してください。\n（やめる場合は「キャンセル」と入力）");
+            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1・2・3 のいずれかを送信してください。\n（やめる場合は「キャンセル」と入力）");
         }
     }
 

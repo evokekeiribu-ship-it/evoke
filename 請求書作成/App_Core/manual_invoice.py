@@ -15,9 +15,27 @@ OUT_DIR = os.path.join(BASE_DIR, "作成済み請求書")
 TEMPLATE_PATH = os.path.join(SCRIPT_DIR, "テンプレート.html")
 SEAL_PATH = os.path.join(SCRIPT_DIR, "seal_b64.txt")
 
-def generate_pdf(destination_name, content_name, unit_price, qty, tax_type, items_override=None):
+def calc_deadline(deadline_type, today):
+    """
+    deadline_type: '1'=1週間後, '2'=当月末, '3'=翌月末
+    """
+    if deadline_type == '2':
+        # 当月末
+        next_month = today.replace(day=28) + timedelta(days=4)
+        return next_month - timedelta(days=next_month.day)
+    elif deadline_type == '3':
+        # 翌月末
+        next_month = today.replace(day=28) + timedelta(days=4)
+        end_of_next_month = next_month - timedelta(days=next_month.day)
+        after = end_of_next_month.replace(day=28) + timedelta(days=4)
+        return after - timedelta(days=after.day)
+    else:
+        # デフォルト: 1週間後
+        return today + timedelta(days=7)
+
+def generate_pdf(destination_name, content_name, unit_price, qty, tax_type, items_override=None, deadline_type='1'):
     today = datetime.now()
-    deadline = today + timedelta(days=7)
+    deadline = calc_deadline(deadline_type, today)
 
     if items_override:
         # 複数商品モード: items_overrideをそのまま使用
@@ -176,7 +194,8 @@ if __name__ == "__main__":
             dest_choice = payload['dest']
             items_data = payload['items']
             tax_type = payload.get('taxType', '1')
-            out_path = generate_pdf(dest_choice, None, None, None, tax_type, items_override=items_data)
+            deadline_type = payload.get('deadlineType', '1')
+            out_path = generate_pdf(dest_choice, None, None, None, tax_type, items_override=items_data, deadline_type=deadline_type)
             print(f"___PDF_GENERATED___:{out_path}")
         except Exception as e:
             print(f"エラーが発生しました: {e}", file=sys.stderr)
