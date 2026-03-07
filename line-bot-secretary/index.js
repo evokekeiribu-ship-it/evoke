@@ -228,6 +228,7 @@ async function processImageOCR(userId, fileId) {
         await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
 
         userStates[userId] = {
+            ...userStates[userId],  // docType / paymentDestType / paymentDestName を保持
             state: 'awaiting_ocr_confirm',
             invoiceData: parsedData,
             fileId: fileId
