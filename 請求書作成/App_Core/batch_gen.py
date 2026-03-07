@@ -43,7 +43,7 @@ def generate_pdf(invoice_data):
     os.makedirs(daily_out_dir, exist_ok=True)
 
     count = 1
-    file_prefix = f"株式会社ミナミトランスポートレーション御中{today_mmdd}-"
+    file_prefix = f"請求書_株式会社ミナミトランスポートレーション御中{today_mmdd}-"
     for fname in os.listdir(daily_out_dir):
         if fname.startswith(file_prefix) and fname.endswith(".pdf"):
             count += 1

@@ -44,7 +44,7 @@ def generate_pdf(dest_type, dest_name, items):
 
     # --- ファイル連番 ---
     safe_dest = re.sub(r'[\\/:*?"<>|]', '_', dest_name)
-    prefix = f"{safe_dest}御中_{today_str}_"
+    prefix = f"お支払い通知書_{safe_dest}御中_{today_str}_"
     count = sum(1 for f in os.listdir(daily_out_dir) if f.startswith(prefix) and f.endswith('.pdf')) + 1
     file_no = f"{count:02}"
     invoice_no = f"{today_str}-P{file_no}"
