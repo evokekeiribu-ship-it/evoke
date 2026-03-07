@@ -164,11 +164,20 @@ async function parseImageWithGemini(imagePath) {
 // キュー処理
 // ============================
 async function processImageItem(userId, fileId) {
-    userStates[userId] = { state: 'processing' };
-
     const queueLen = (userQueues[userId] || []).length;
     const queueMsg = queueLen > 0 ? `（残り${queueLen}枚待機中）` : '';
-    await lineWorksApi.sendTextMessage(userId, `【システム】レシート画像を認識しました！請求書を作成しています...⏳${queueMsg}`).catch(e => console.error(e));
+
+    // 書類の種類を確認
+    userStates[userId] = { state: 'awaiting_doc_type', pendingFileId: fileId };
+    await lineWorksApi.sendTextMessage(userId,
+        `【システム】画像を受け取りました📩${queueMsg}\n\nどちらの書類ですか？\n1: 請求書\n2: 支払い通知書`
+    ).catch(e => console.error(e));
+}
+
+async function processImageOCR(userId, fileId) {
+    const docType = userStates[userId] && userStates[userId].docType || 'invoice';
+    userStates[userId] = { ...userStates[userId], state: 'processing' };
+    await lineWorksApi.sendTextMessage(userId, `【システム】読み取りを開始します...⏳`).catch(e => console.error(e));
 
     try {
         if (!fs.existsSync(invoiceInDir)) {
@@ -196,13 +205,15 @@ async function processImageItem(userId, fileId) {
             return;
         }
 
-        // 単価調整ルール: 20000円以上 → -100円、20000円未満 → -20円
+        // 単価調整ルール
+        // 請求書: ≥20000→-100、<20000→-20 / 支払い通知書: ≥20000→-100、<20000→-50
+        const lowerAdj = docType === 'payment' ? -50 : -20;
         parsedData.items = parsedData.items.map(it => {
             const rawUnit = parseInt(String(it.unit).replace(/[^0-9]/g, ''), 10) || 0;
             const rawQty = parseInt(String(it.qty).replace(/[^0-9]/g, ''), 10) || 1;
-            const adjustment = rawUnit >= 20000 ? -100 : -20;
+            const adjustment = rawUnit >= 20000 ? -100 : lowerAdj;
             const adjustedUnit = rawUnit + adjustment;
-            console.log(`[単価調整] ${it.name}: ${rawUnit}円 → ${adjustedUnit}円 (${adjustment > 0 ? '+' : ''}${adjustment})`);
+            console.log(`[単価調整] ${it.name}: ${rawUnit}円 → ${adjustedUnit}円 (${adjustment})`);
             return { ...it, unit: adjustedUnit, qty: rawQty, total: adjustedUnit * rawQty };
         });
 
@@ -348,23 +359,75 @@ async function handleEvent(event) {
             finishAndProcessNext(userId);
         }
 
+    } else if (userStates[userId] && userStates[userId].state === 'awaiting_doc_type') {
+        if (userMessage === '1') {
+            // 請求書 → 既存OCRフローへ
+            const fileId = userStates[userId].pendingFileId;
+            userStates[userId].docType = 'invoice';
+            processImageOCR(userId, fileId).catch(e => console.error(e));
+            return Promise.resolve(null);
+        } else if (userMessage === '2') {
+            // 支払い通知書 → 宛先選択へ
+            userStates[userId].docType = 'payment';
+            userStates[userId].state = 'awaiting_payment_dest';
+            return lineWorksApi.sendTextMessage(userId, "【システム】宛先を選択してください👇\n1: ちなじゅん運送\n2: それ以外");
+        } else {
+            return lineWorksApi.sendTextMessage(userId, "【システム】1 か 2 を送信してください。\n1: 請求書　2: 支払い通知書");
+        }
+
+    } else if (userStates[userId] && userStates[userId].state === 'awaiting_payment_dest') {
+        if (userMessage === '1' || userMessage === '2') {
+            const destType = userMessage === '1' ? 'chinajun' : 'other';
+            const destName = userMessage === '1' ? 'ちなじゅん運送' : '';
+            userStates[userId].paymentDestType = destType;
+            userStates[userId].paymentDestName = destName;
+            const fileId = userStates[userId].pendingFileId;
+            if (userMessage === '2') {
+                // それ以外は宛先名を聞く
+                userStates[userId].state = 'awaiting_payment_dest_name';
+                return lineWorksApi.sendTextMessage(userId, "【システム】宛先の会社名を入力してください");
+            }
+            processImageOCR(userId, fileId).catch(e => console.error(e));
+            return Promise.resolve(null);
+        } else {
+            return lineWorksApi.sendTextMessage(userId, "【システム】1 か 2 を送信してください。\n1: ちなじゅん運送　2: それ以外");
+        }
+
+    } else if (userStates[userId] && userStates[userId].state === 'awaiting_payment_dest_name') {
+        userStates[userId].paymentDestName = userMessage.trim();
+        const fileId = userStates[userId].pendingFileId;
+        processImageOCR(userId, fileId).catch(e => console.error(e));
+        return Promise.resolve(null);
+
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_ocr_confirm') {
         const isYes = userMessage === 'はい' || userMessage === 'ハイ' || userMessage.toLowerCase() === 'yes' || userMessage === '1';
         const isNo = userMessage === 'キャンセル' || userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no' || userMessage === '2';
 
         if (isYes) {
             const invoiceData = userStates[userId].invoiceData;
+            const savedDocType = userStates[userId].docType || 'invoice';
+            const savedDestType = userStates[userId].paymentDestType || 'other';
+            const savedDestName = userStates[userId].paymentDestName || '';
             userStates[userId].state = 'processing';
 
             return new Promise(async (resolve) => {
                 await lineWorksApi.sendTextMessage(userId, "【システム】承知しました！PDFを作成しています...⏳").catch(e => console.error(e));
 
-                const scriptPath = path.join(rootDir, '請求書作成', 'App_Core', 'batch_gen.py');
-                const workDir = path.dirname(scriptPath);
+                const workDir = path.join(rootDir, '請求書作成', 'App_Core');
                 const pythonExe = process.env.PYTHON_CMD || 'python';
                 const execOptions = { cwd: workDir, env: { ...process.env } };
 
-                execFile(pythonExe, [scriptPath, '--generate-from-json', JSON.stringify(invoiceData)], execOptions, async (error, stdout, stderr) => {
+                let scriptPath, scriptArgs;
+                if (savedDocType === 'payment') {
+                    scriptPath = path.join(workDir, 'payment_notice.py');
+                    const payload = JSON.stringify({ destType: savedDestType, destName: savedDestName, items: invoiceData.items });
+                    scriptArgs = ['--payment-json', payload];
+                } else {
+                    scriptPath = path.join(workDir, 'batch_gen.py');
+                    scriptArgs = ['--generate-from-json', JSON.stringify(invoiceData)];
+                }
+
+                execFile(pythonExe, [scriptPath, ...scriptArgs], execOptions, async (error, stdout, stderr) => {
                     if (error) {
                         console.error(`実行エラー: ${error.message}\n${stderr}`);
                         let errDetails = stderr ? stderr.substring(0, 500) : error.message.substring(0, 500);

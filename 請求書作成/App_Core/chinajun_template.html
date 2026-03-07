@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>お支払い通知書</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: "Noto Sans JP", "Meiryo", sans-serif;
+            margin: 0; padding: 0; background: #fff; color: #333;
+        }
+        .page {
+            width: 210mm; min-height: 297mm;
+            padding: 10mm 15mm; margin: 0 auto;
+            background: #fff; box-sizing: border-box;
+        }
+        @page { size: A4; margin: 0; }
+        @media print {
+            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .page { margin: 0; padding: 10mm 15mm; width: 100%; }
+        }
+
+        /* === ヘッダー === */
+        .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+        .title-bar {
+            background: #1b5e20; color: #fff;
+            font-size: 18pt; font-weight: 700;
+            padding: 6px 20px; border-radius: 4px;
+        }
+        .header-meta { text-align: right; font-size: 9pt; line-height: 1.8; }
+
+        /* === 宛名 === */
+        .recipient-row { display: flex; align-items: baseline; margin: 8px 0 6px 0; }
+        .recipient-name { font-size: 14pt; font-weight: 700; text-decoration: underline; }
+        .recipient-honorific { font-size: 12pt; font-weight: 700; color: #1b5e20; margin-left: 8px; }
+
+        /* === メインエリア（左右分割） === */
+        .main-area { display: flex; gap: 12px; margin-bottom: 8px; }
+
+        /* === 支払い情報（左） === */
+        .payment-info { flex: 1.2; }
+        .greeting { font-size: 9pt; margin-bottom: 8px; }
+        .payment-amount-box {
+            display: flex; align-items: center;
+            border: 1.5px solid #1b5e20; border-radius: 3px;
+            overflow: hidden; margin-bottom: 6px;
+        }
+        .payment-label {
+            background: #1b5e20; color: #fff;
+            font-size: 10pt; font-weight: 700;
+            padding: 6px 10px; white-space: nowrap;
+        }
+        .payment-yen { font-size: 12pt; font-weight: 700; padding: 0 6px; }
+        .payment-value { font-size: 13pt; font-weight: 700; flex: 1; padding: 4px 8px; }
+        .payment-dash { font-size: 14pt; font-weight: 700; padding: 0 8px; }
+        .payment-date { font-size: 9pt; }
+
+        /* === 振込先（右） === */
+        .bank-info { flex: 1; }
+        .bank-title {
+            background: #1b5e20; color: #fff;
+            font-size: 9pt; font-weight: 700;
+            padding: 4px 10px; text-align: center;
+        }
+        .bank-table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+        .bank-table td { border: 1px solid #aaa; padding: 3px 6px; }
+        .bank-table .lbl { background: #c8e6c9; font-weight: 700; white-space: nowrap; width: 30%; }
+        .invoice-no-bar {
+            background: #1b5e20; color: #fff;
+            font-size: 8.5pt; font-weight: 700;
+            padding: 3px 8px; margin-top: 2px;
+            display: flex; justify-content: space-between;
+        }
+
+        /* === 明細テーブル === */
+        .items-table { width: 100%; border-collapse: collapse; font-size: 8.5pt; margin-bottom: 4px; }
+        .items-table th {
+            background: #1b5e20; color: #fff;
+            font-weight: 700; padding: 5px 6px;
+            border: 1px solid #1b5e20; text-align: center;
+        }
+        .items-table td {
+            border: 1px solid #c8e6c9; padding: 3px 6px;
+            text-align: right;
+        }
+        .items-table td.name-col { text-align: left; }
+        .items-table tr:nth-child(even) td { background: #f1f8e9; }
+        .items-table tr:nth-child(odd) td { background: #fff; }
+
+        /* === 合計行 === */
+        .totals-row {
+            display: flex; align-items: center;
+            border: 1px solid #c8e6c9; font-size: 8.5pt;
+        }
+        .tot-lbl {
+            background: #1b5e20; color: #fff;
+            font-weight: 700; padding: 4px 8px;
+            white-space: nowrap;
+        }
+        .tot-val { padding: 4px 10px; min-width: 70px; text-align: right; border-right: 1px solid #c8e6c9; }
+        .tot-space { flex: 1; background: #f1f8e9; }
+
+        /* === 下部 === */
+        .bottom-area { display: flex; gap: 12px; margin-top: 8px; }
+        .notes-box { flex: 1.5; }
+        .notes-title { font-size: 9pt; font-weight: 700; margin-bottom: 3px; }
+        .notes-content { border: 1px solid #aaa; min-height: 50px; padding: 4px; font-size: 8pt; }
+        .company-info { flex: 1; text-align: right; font-size: 8.5pt; line-height: 1.7; position: relative; }
+        .company-logo { font-size: 22pt; font-weight: 700; color: #1b5e20; }
+        .seal-img { width: 55px; height: 55px; position: absolute; right: 0; bottom: 0; }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- ヘッダー -->
+    <div class="header">
+        <div class="title-bar">お支払い通知書</div>
+        <div class="header-meta">
+            お支払い No：<strong id="payment-no"><!-- PAYMENT_NO --></strong><br>
+            作成日：<span id="created-date"><!-- CREATED_DATE --></span>
+        </div>
+    </div>
+
+    <!-- 宛名 -->
+    <div class="recipient-row">
+        <span class="recipient-name" id="recipient-name"><!-- RECIPIENT_NAME --></span>
+        <span class="recipient-honorific">御 中</span>
+    </div>
+
+    <!-- メインエリア -->
+    <div class="main-area">
+
+        <!-- 左：支払い情報 -->
+        <div class="payment-info">
+            <div class="greeting">下記の通りお支払い申し上げます。</div>
+            <div class="payment-amount-box">
+                <div class="payment-label">ご支払い金額</div>
+                <div class="payment-yen">¥</div>
+                <div class="payment-value" id="payment-total"><!-- PAYMENT_TOTAL --></div>
+                <div class="payment-dash">-</div>
+            </div>
+            <div class="payment-date">（お支払い日）&nbsp;<span id="payment-date"><!-- PAYMENT_DATE --></span></div>
+        </div>
+
+        <!-- 右：振込先 -->
+        <div class="bank-info">
+            <div class="bank-title">振込先</div>
+            <table class="bank-table">
+                <tr><td class="lbl">銀　行</td><td>三井住友銀行</td></tr>
+                <tr><td class="lbl">支　店</td><td>難波支店</td></tr>
+                <tr><td class="lbl">口座番号</td><td>（普）8597011</td></tr>
+                <tr><td class="lbl">口座名称</td><td>ちなじゅん運送 井後陽輔</td></tr>
+            </table>
+            <div class="invoice-no-bar">
+                <span>インボイス番号</span>
+                <span id="invoice-no"><!-- INVOICE_NO --></span>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 明細テーブル -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th style="width:45%; text-align:left;">品名</th>
+                <th style="width:15%;">単価(税込)</th>
+                <th style="width:10%;">数量</th>
+                <th style="width:15%;">金額(税込)</th>
+                <th style="width:15%;">備考欄</th>
+            </tr>
+        </thead>
+        <tbody id="item-rows">
+            <!-- ITEM_ROWS -->
+        </tbody>
+    </table>
+
+    <!-- 合計行 -->
+    <div class="totals-row">
+        <div class="tot-lbl">小計（税率10%）</div>
+        <div class="tot-val" id="subtotal"><!-- SUBTOTAL --></div>
+        <div class="tot-lbl">税抜</div>
+        <div class="tot-val" id="tax-excl"><!-- TAX_EXCL --></div>
+        <div class="tot-space"></div>
+        <div class="tot-lbl">合計（税込）</div>
+        <div class="tot-val" id="grand-total"><!-- GRAND_TOTAL --></div>
+    </div>
+
+    <!-- 下部：備考＋会社情報 -->
+    <div class="bottom-area">
+        <div class="notes-box">
+            <div class="notes-title">備考欄：</div>
+            <div class="notes-content"></div>
+        </div>
+        <div class="company-info">
+            <div class="company-logo">evoke</div>
+            <div>株式会社 evoke</div>
+            <div>〒 558-0043</div>
+            <div>大阪市住吉区墨江2-2-35</div>
+            <div>☎ 080-1750-4373</div>
+            <div>登録番号</div>
+            <div>T4120001206506</div>
+            <img class="seal-img" src="data:image/png;base64,SEAL_BASE64" alt="seal">
+        </div>
+    </div>
+
+</div>
+</body>
+</html>
