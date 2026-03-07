@@ -1,903 +1,477 @@
 require('dotenv').config();
-const express = require('express');
+const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
 const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec, execFile } = require('child_process');
 const https = require('https');
+const { exec, execFile } = require('child_process');
 const axios = require('axios');
-const FormData = require('form-data');
+const express = require('express');
 
-// LINE WORKS API 用の独自モジュール
-const lineWorksApi = require('./lineWorksApi');
+// ============================================================
+// 設定
+// ============================================================
+const PORT = process.env.PORT || 3000;
+const REQUEST_CHANNEL_ID = '1479786512152531006'; // 📨 作成依頼
+const SAVE_CHANNEL_ID    = '1479786536877949110'; // 📁 PDF保存
 
-// Google API 認証情報の環境変数からの復元 (Render対応)
-if (process.env.GOOGLE_CREDENTIALS_JSON) {
-    try {
-        const credsFile = path.join(__dirname, 'google-credentials.json');
-        fs.writeFileSync(credsFile, process.env.GOOGLE_CREDENTIALS_JSON);
-        process.env.GOOGLE_APPLICATION_CREDENTIALS = credsFile;
-        console.log("✅ Google Credentials JSON file created from environment variable.");
-    } catch (err) {
-        console.error("❌ Error creating Google Credentials file:", err);
-    }
-}
-
-// 2. クライアントの準備
-const app = express();
-app.use(express.json()); // LINE WORKS からの JSON ボディをパースする
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-// ユーザーごとの会話セッションを保存するオブジェクト
-const userChats = {};
-// ピック依頼用の状態管理オブジェクト
-const userStates = {};
-// 画像処理キュー（ユーザーごと）
-const userQueues = {};
-
-// 画像の一時保存用ディレクトリ
-const rootDir = path.dirname(__dirname); // __dirname is line-bot-secretary, rootDir is deveropment
-const invoiceInDir = path.join(rootDir, '請求書作成', '請求書作成依頼');
+const rootDir      = path.join(__dirname, '..');
+const workDir      = path.join(rootDir, '請求書作成', 'App_Core');
 const invoiceOutDir = path.join(rootDir, '請求書作成', '作成済み請求書');
 
-// Discord PDF保存 (Webhook方式)
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+// Gemini
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-async function sendPdfToDiscord(pdfPath, label) {
-    if (!DISCORD_WEBHOOK_URL) { console.log('DISCORD_WEBHOOK_URL未設定のためスキップ'); return; }
-    try {
-        const filename = path.basename(pdfPath);
-        console.log(`Discord送信開始: ${filename}`);
-        const form = new FormData();
-        form.append('content', `📄 ${label}`);
-        form.append('files[0]', fs.createReadStream(pdfPath), { filename, contentType: 'application/pdf' });
-        const resp = await axios.post(DISCORD_WEBHOOK_URL, form, { headers: form.getHeaders() });
-        console.log(`Discord保存完了: ${filename} status=${resp.status}`);
-    } catch (e) {
-        console.error('Discord PDF送信エラー:', e.response ? JSON.stringify(e.response.data) : e.message);
-    }
-}
-
-// 3. Webhookエンドポイント（LINE WORKSからのメッセージを受け取る場所）
-app.post('/webhook', async (req, res) => {
-    // 常に200 OKを素早く返す
-    res.status(200).send('OK');
-
-    try {
-        const event = req.body;
-        console.log("=== Webhook到達 ===");
-        console.log(JSON.stringify(event, null, 2));
-
-        if (event && event.type === 'message') {
-            await handleEvent(event);
-        }
-    } catch (err) {
-        console.error("Webhook処理エラー:", err);
-    }
+// Discord Bot
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+    ]
 });
 
-// （念のためダウンロード用エンドポイントも残しておきます）
-app.get('/download/:dateFolder/:filename', (req, res) => {
-    const dateFolder = req.params.dateFolder;
-    const filename = req.params.filename;
+// 状態管理
+const userStates = {};
+const userQueues = {};
 
-    if (dateFolder.includes('..') || filename.includes('..')) {
-        return res.status(403).send('Forbidden');
-    }
+// ============================================================
+// Keep-alive サーバー（Render用）
+// ============================================================
+const app = express();
+app.use(express.json());
+app.get('/', (req, res) => res.send('Discord Invoice Bot is running!'));
+app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+app.listen(PORT, () => console.log(`Keep-alive server: port ${PORT}`));
 
-    const filePath = path.join(invoiceOutDir, dateFolder, filename);
-
-    if (fs.existsSync(filePath)) {
-        res.download(filePath, filename);
-    } else {
-        res.status(404).send('ファイルが見つかりません');
-    }
-});
-
-app.get('/download-order/:filename', (req, res) => {
-    const filename = req.params.filename;
-
-    if (filename.includes('..')) {
-        return res.status(403).send('Forbidden');
-    }
-
-    const manualOutDir = path.join(rootDir, '注文確認');
-    const filePath = path.join(manualOutDir, filename);
-
-    if (fs.existsSync(filePath)) {
-        res.download(filePath, filename);
-    } else {
-        res.status(404).send('ファイルが見つかりません');
-    }
-});
-
-// ============================
-// Gemini Vision APIで画像OCR
-// ============================
-async function parseImageWithGemini(imagePath) {
-    const imageData = fs.readFileSync(imagePath);
-    const base64Image = imageData.toString('base64');
-    const ext = path.extname(imagePath).toLowerCase();
-    const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
-
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-    const deadlineDate = new Date(today);
-    deadlineDate.setDate(deadlineDate.getDate() + 7);
-    const deadlineStr = deadlineDate.toISOString().split('T')[0];
-
-    const prompt = `この画像は商品の仕入れリスト・発注書・納品書・レシートです。
-まず画像の商品テーブルに何行あるか数えてください。
-次に、その全ての行を漏れなく読み取り、以下のJSONフォーマットのみを返してください。
-
-{
-  "today": "${todayStr}",
-  "deadline": "${deadlineStr}",
-  "items": [
-    {
-      "name": "商品名（画像の通り正確に記載。略さない）",
-      "unit": 単価（画像に記載された金額そのまま、整数のみ）,
-      "qty": 数量（整数のみ）,
-      "total": 合計（単価×数量、整数のみ）
-    }
-  ]
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+if (RENDER_URL) {
+    setInterval(() => {
+        https.get(`${RENDER_URL}/health`).on('error', () => {});
+    }, 14 * 60 * 1000);
 }
 
-厳守事項：
-- テーブルの全行を必ず読み取ること（1行も飛ばさない）
-- Switch Sports、ジョイコン、ゼルダ、NS2、メガシンフォニアなど略称の商品も全て含める
-- 商品名は画像の記載通りに正確に書く（省略・変換しない）
-- 金額は画像に書いてある数値をそのまま使う（計算しない）
-- JSONのみ出力（マークダウン記法・コードブロック不要）
-- items配列を途中で切らない（全商品を含めること）`;
-
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-            {
-                parts: [
-                    { text: prompt },
-                    {
-                        inlineData: {
-                            mimeType: mimeType,
-                            data: base64Image
-                        }
-                    }
-                ]
-            }
-        ],
-        config: {
-            temperature: 0.1
-        }
-    });
-
-    let jsonStr = response.text;
-    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
-    if (jsonMatch) jsonStr = jsonMatch[0];
-
-    const parsed = JSON.parse(jsonStr);
-    return parsed;
+// ============================================================
+// ヘルパー関数
+// ============================================================
+async function sendMsg(channel, text, replyMsg = null) {
+    const opts = { content: text };
+    if (replyMsg) opts.reply = { messageReference: replyMsg.id, failIfNotExists: false };
+    return channel.send(opts).catch(e => console.error('sendMsg error:', e));
 }
 
-// ============================
-// キュー処理
-// ============================
-async function processImageItem(userId, fileId) {
-    const queueLen = (userQueues[userId] || []).length;
-    const queueMsg = queueLen > 0 ? `（残り${queueLen}枚待機中）` : '';
-
-    // 書類の種類を確認
-    userStates[userId] = { state: 'awaiting_doc_type', pendingFileId: fileId };
-    await lineWorksApi.sendTextMessage(userId,
-        `【システム】画像を受け取りました📩${queueMsg}\n\nどちらの書類ですか？\n1: 請求書\n2: 支払い通知書`
-    ).catch(e => console.error(e));
-}
-
-async function processImageOCR(userId, fileId) {
-    const docType = userStates[userId] && userStates[userId].docType || 'invoice';
-    userStates[userId] = { ...userStates[userId], state: 'processing' };
-    await lineWorksApi.sendTextMessage(userId, `【システム】読み取りを開始します...⏳`).catch(e => console.error(e));
-
+async function sendPdf(channel, pdfPath, label, replyMsg = null) {
+    const filename = path.basename(pdfPath);
     try {
-        if (!fs.existsSync(invoiceInDir)) {
-            fs.mkdirSync(invoiceInDir, { recursive: true });
-        }
-
-        const imagePath = path.join(invoiceInDir, `${fileId}.jpg`);
-        await lineWorksApi.downloadImage(fileId, imagePath);
-
-        console.log("画像の保存が完了しました。Gemini Vision APIでOCRを実行します。");
-
-        let parsedData = null;
-        try {
-            parsedData = await parseImageWithGemini(imagePath);
-        } catch (geminiErr) {
-            console.error(`Gemini OCRエラー: ${geminiErr.message}`);
-            await lineWorksApi.sendTextMessage(userId, `【エラー】画像の読み取りに失敗しました💦\n${geminiErr.message}`).catch(e => console.error(e));
-            finishAndProcessNext(userId);
-            return;
-        }
-
-        if (!parsedData || !parsedData.items || parsedData.items.length === 0) {
-            await lineWorksApi.sendTextMessage(userId, "【システム】レシートから商品を読み取れませんでした💦\n明るい場所で撮り直すか、「請求書」と送信して手動作成をお試しください。").catch(e => console.error(e));
-            finishAndProcessNext(userId);
-            return;
-        }
-
-        // 単価調整ルール
-        // 請求書: ≥20000→-100、<20000→-20 / 支払い通知書: ≥20000→-100、<20000→-50
-        const lowerAdj = docType === 'payment' ? -50 : -20;
-        parsedData.items = parsedData.items.map(it => {
-            const rawUnit = parseInt(String(it.unit).replace(/[^0-9]/g, ''), 10) || 0;
-            const rawQty = parseInt(String(it.qty).replace(/[^0-9]/g, ''), 10) || 1;
-            const adjustment = rawUnit >= 20000 ? -100 : lowerAdj;
-            const adjustedUnit = rawUnit + adjustment;
-            console.log(`[単価調整] ${it.name}: ${rawUnit}円 → ${adjustedUnit}円 (${adjustment})`);
-            return { ...it, unit: adjustedUnit, qty: rawQty, total: adjustedUnit * rawQty };
-        });
-
-        let confirmText = "【システム】画像から以下の内容を読み取りました👀\n\n【商品リスト】\n";
-        let total = 0;
-        parsedData.items.forEach(it => {
-            confirmText += `- ${it.name} ${it.qty}個 @¥${it.unit.toLocaleString()} = ¥${it.total.toLocaleString()}\n`;
-            total += it.total;
-        });
-        const docLabel = docType === 'payment' ? '支払い通知書' : '請求書';
-        confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で${docLabel}を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
-
-        await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
-
-        userStates[userId] = {
-            ...userStates[userId],  // docType / paymentDestType / paymentDestName を保持
-            state: 'awaiting_ocr_confirm',
-            invoiceData: parsedData,
-            fileId: fileId
+        const opts = {
+            content: `📄 ${label}`,
+            files: [new AttachmentBuilder(pdfPath, { name: filename })]
         };
-
-    } catch (err) {
-        console.error("画像処理エラー:", err);
-        await lineWorksApi.sendTextMessage(userId, "【エラー】処理中に予期せぬエラーが発生しました💦").catch(e => console.error(e));
-        finishAndProcessNext(userId);
+        if (replyMsg) opts.reply = { messageReference: replyMsg.id, failIfNotExists: false };
+        await channel.send(opts);
+    } catch (e) {
+        console.error('作成依頼チャンネル送信エラー:', e);
     }
+    // PDF保存チャンネルにも送信
+    try {
+        const saveChannel = await client.channels.fetch(SAVE_CHANNEL_ID);
+        await saveChannel.send({
+            content: `📄 ${label}`,
+            files: [new AttachmentBuilder(pdfPath, { name: filename })]
+        });
+    } catch (e) {
+        console.error('PDF保存チャンネル送信エラー:', e);
+    }
+}
+
+async function downloadImage(url, localPath) {
+    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    fs.writeFileSync(localPath, Buffer.from(response.data));
+}
+
+function runPython(scriptPath, args, cwd) {
+    const pythonExe = process.env.PYTHON_CMD || 'python';
+    return new Promise((resolve, reject) => {
+        execFile(pythonExe, [scriptPath, ...args], { cwd, env: { ...process.env } }, (error, stdout, stderr) => {
+            if (error) reject({ error, stderr });
+            else resolve(stdout);
+        });
+    });
 }
 
 function finishAndProcessNext(userId) {
     delete userStates[userId];
     if (userQueues[userId] && userQueues[userId].length > 0) {
-        const nextFileId = userQueues[userId].shift();
-        console.log(`[キュー] 次の画像を処理開始: ${nextFileId} (残り: ${userQueues[userId].length}枚)`);
-        processImageItem(userId, nextFileId).catch(e => console.error("キュー処理エラー:", e));
+        const next = userQueues[userId].shift();
+        processImageItem(userId, next.attachmentUrl, next.channel, next.originalMsg);
     }
 }
 
-// 4. メッセージ受信時の処理
-async function handleEvent(event) {
-    if (!event.content || !event.source) {
-        return Promise.resolve(null);
+// ============================================================
+// 画像OCRフロー
+// ============================================================
+async function processImageItem(userId, attachmentUrl, channel, originalMsg) {
+    userStates[userId] = { state: 'awaiting_doc_type', attachmentUrl, channel, originalMsg };
+    await sendMsg(channel, '【システム】画像を受け取りました！\n作成する書類を選択してください👇\n1: 請求書\n2: お支払い通知書', originalMsg);
+}
+
+async function processImageOCR(userId) {
+    const { attachmentUrl, channel, originalMsg, docType } = userStates[userId];
+    await sendMsg(channel, '【システム】画像を読み取っています...⏳');
+
+    try {
+        const tmpPath = path.join(workDir, `tmp_ocr_${userId}_${Date.now()}.jpg`);
+        await downloadImage(attachmentUrl, tmpPath);
+
+        const base64Image = fs.readFileSync(tmpPath).toString('base64');
+        fs.unlinkSync(tmpPath);
+
+        const adjustRule = docType === 'payment'
+            ? '・20,000円以上の単価: -100円\n・20,000円未満の単価: -50円'
+            : '・20,000円以上の単価: -100円\n・20,000円未満の単価: -20円';
+
+        const prompt = `この画像は運送業の請求書またはレシートです。画像に含まれる全ての明細行を一行も省略せずに全て抽出してください。
+各行の作業内容・単価・数量を特定してください。
+単価の調整ルール（抽出後に適用）:
+${adjustRule}
+
+以下のJSON形式のみで返してください:
+{"items": [{"name": "作業内容", "unit": 単価調整後の数値, "qty": 数量}]}`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ parts: [
+                { text: prompt },
+                { inlineData: { mimeType: 'image/jpeg', data: base64Image } }
+            ]}]
+        });
+
+        const rawText = response.candidates[0].content.parts[0].text;
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('JSONが見つかりませんでした');
+
+        const parsed = JSON.parse(jsonMatch[0]);
+        const items = parsed.items.map(item => {
+            const unit = parseInt(String(item.unit).replace(/[^0-9\-]/g, ''), 10) || 0;
+            const qty  = parseInt(String(item.qty).replace(/[^0-9]/g, ''), 10) || 1;
+            return { name: item.name, unit, qty, total: unit * qty };
+        });
+
+        const total = items.reduce((s, it) => s + it.total, 0);
+        const docLabel = docType === 'payment' ? '支払い通知書' : '請求書';
+        let confirmText = '【システム】以下の内容で読み取りました：\n\n';
+        items.forEach((it, i) => {
+            confirmText += `${i+1}. ${it.name}\n   ¥${it.unit.toLocaleString()} × ${it.qty}個 = ¥${it.total.toLocaleString()}\n`;
+        });
+        confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で${docLabel}を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
+
+        userStates[userId] = { ...userStates[userId], state: 'awaiting_ocr_confirm', invoiceData: { items } };
+        await sendMsg(channel, confirmText);
+    } catch (e) {
+        console.error('OCRエラー:', e);
+        await sendMsg(channel, `【エラー】画像の読み取りに失敗しました💦\n${e.message || '不明なエラー'}`);
+        finishAndProcessNext(userId);
     }
+}
 
-    // LINE WORKSでは送信者のIDは `accountId` （または `userId`）に入ります
-    const userId = event.source.accountId || event.source.userId;
+// ============================================================
+// メインメッセージハンドラ
+// ============================================================
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+    if (message.channelId !== REQUEST_CHANNEL_ID) return;
 
-    // --- 画像メッセージ（請求書作成）の処理 ---
-    if (event.content.type === 'image') {
-        const fileId = event.content.fileId;
-        const isIdle = !userStates[userId] || !userStates[userId].state;
+    const userId = message.author.id;
+    const userMessage = message.content.trim();
+    const channel = message.channel;
 
-        if (isIdle) {
-            console.log("👉 LINE WORKSから画像を受信しました！即時処理開始。");
-            processImageItem(userId, fileId).catch(e => console.error("画像処理エラー:", e));
-        } else {
-            if (!userQueues[userId]) userQueues[userId] = [];
-            userQueues[userId].push(fileId);
-            const pos = userQueues[userId].length;
-            console.log(`👉 画像をキューに追加: ${fileId} (位置: ${pos})`);
-            await lineWorksApi.sendTextMessage(userId, `【システム】画像を受け取りました📩 現在処理中のため、順番待ちキューに追加しました（${pos}枚待機中）`).catch(e => console.error(e));
-        }
-        return Promise.resolve(null);
-    }
-
-    // テキスト以外のメッセージは無視する
-    if (event.content.type !== 'text') {
-        return Promise.resolve(null);
-    }
-
-    const userMessage = event.content.text;
-
-    // 処理中のメッセージは無視
-    if (userStates[userId] && userStates[userId].state && userStates[userId].state.startsWith('processing')) {
-        return Promise.resolve(null);
-    }
-
-    // --- キャンセル処理 ---
-    if (userMessage === "キャンセル") {
+    // ---- キャンセル ----
+    if (userMessage === 'キャンセル') {
         if (userStates[userId]) {
             finishAndProcessNext(userId);
-            return lineWorksApi.sendTextMessage(userId, "【システム】処理をキャンセルしました。最初からやり直してください😊");
+            return sendMsg(channel, '【システム】操作をキャンセルしました。', message);
         }
+        return;
     }
 
-    // --- 戻る処理 ---
-    if (userMessage === "戻る" || userMessage === "もどる") {
-        if (userStates[userId]) {
-            const currentState = userStates[userId].state;
-
-            // 請求書作成フローの巻き戻し
-            if (currentState === 'awaiting_manual_deadline') {
-                userStates[userId].state = 'awaiting_manual_tax';
-                const items = userStates[userId].manualItems || [];
-                let summary = items.map((it, i) => `${i+1}. ${it.name} ${it.qty}個 ¥${it.unit.toLocaleString()}`).join('\n');
-                return lineWorksApi.sendTextMessage(userId, `【システム】1つ前の項目に戻ります。\n\n${summary}\n\n税込みですか？税抜きですか？\n1: 税込み\n2: 税抜き`);
-            } else if (currentState === 'awaiting_manual_tax') {
-                userStates[userId].state = 'awaiting_manual_qty';
-                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n個数を半角数字で教えてください");
-            } else if (currentState === 'awaiting_manual_qty') {
-                userStates[userId].state = 'awaiting_manual_price';
-                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n金額（単価）を半角数字で教えてください");
-            } else if (currentState === 'awaiting_manual_price') {
-                userStates[userId].state = 'awaiting_manual_content';
-                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n内容を教えてください");
-            } else if (currentState === 'awaiting_manual_more') {
-                userStates[userId].state = 'awaiting_manual_qty';
-                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n個数を半角数字で教えてください");
-            } else if (currentState === 'awaiting_manual_content') {
-                userStates[userId].state = 'awaiting_manual_dest';
-                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n宛先を教えてください");
-            } else if (currentState === 'awaiting_manual_dest') {
-                return lineWorksApi.sendTextMessage(userId, "【システム】これ以上戻れません。\nやめる場合は「キャンセル」と入力してください");
-            }
-
-            // ピック依頼フローの巻き戻し
-            if (currentState === 'awaiting_qty') {
-                userStates[userId].state = 'awaiting_dest';
-                return lineWorksApi.sendTextMessage(userId, "【システム】1つ前の項目に戻ります。\n宛先を選択してください👇\n1: ミナミトランスポートレーション\n2: TUYOSHI\n(半角の 1 か 2 を送信してください)");
-            } else if (currentState === 'awaiting_dest') {
-                return lineWorksApi.sendTextMessage(userId, "【システム】これ以上戻れません。\nやめる場合は「キャンセル」と入力してください");
-            }
-        }
-    }
-
-    // 状態に基づいたフロー処理
-    if (userStates[userId] && userStates[userId].state === 'awaiting_image_delete') {
-        const isYes = userMessage === '1' || userMessage === 'はい' || userMessage === 'ハイ' || userMessage.toLowerCase() === 'yes';
-        const isNo = userMessage === '2' || userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no';
-
-        if (isYes) {
-            finishAndProcessNext(userId);
-            try {
-                if (fs.existsSync(invoiceInDir)) {
-                    const oldFiles = fs.readdirSync(invoiceInDir);
-                    for (const file of oldFiles) {
-                        fs.unlinkSync(path.join(invoiceInDir, file));
-                    }
+    // ---- 画像添付 ----
+    if (message.attachments.size > 0) {
+        const images = [...message.attachments.values()].filter(a => a.contentType?.startsWith('image/'));
+        if (images.length > 0) {
+            for (const img of images) {
+                if (userStates[userId]?.state) {
+                    if (!userQueues[userId]) userQueues[userId] = [];
+                    userQueues[userId].push({ attachmentUrl: img.url, channel, originalMsg: message });
+                    await sendMsg(channel, `【システム】キューに追加しました（待ち: ${userQueues[userId].length}件）`, message);
+                } else {
+                    await processImageItem(userId, img.url, channel, message);
                 }
-                return lineWorksApi.sendTextMessage(userId, "【システム】元画像を削除しました！🗑️");
-            } catch (err) {
-                console.error("画像削除エラー:", err);
-                return lineWorksApi.sendTextMessage(userId, "【システム】画像の削除中にエラーが発生しました💦");
             }
-        } else if (isNo) {
-            finishAndProcessNext(userId);
-            return lineWorksApi.sendTextMessage(userId, "【システム】元画像を保持します。📂");
-        } else {
-            // 1,2 以外の関連しないメッセージが来た場合は状態をクリアして、下のGeminiに流す
-            console.log("DEBUG: fallthrough for unrecognized message in delete prompt:", userMessage);
-            finishAndProcessNext(userId);
+            return;
         }
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_doc_type') {
+    const st = userStates[userId];
+    const state = st?.state;
+
+    // ============================================================
+    // OCRフロー状態管理
+    // ============================================================
+
+    // 書類タイプ選択
+    if (state === 'awaiting_doc_type') {
         if (userMessage === '1') {
-            // 請求書 → 既存OCRフローへ
-            const fileId = userStates[userId].pendingFileId;
             userStates[userId].docType = 'invoice';
-            processImageOCR(userId, fileId).catch(e => console.error(e));
-            return Promise.resolve(null);
+            return processImageOCR(userId);
         } else if (userMessage === '2') {
-            // 支払い通知書 → 宛先選択へ
             userStates[userId].docType = 'payment';
             userStates[userId].state = 'awaiting_payment_dest';
-            return lineWorksApi.sendTextMessage(userId, "【システム】宛先を選択してください👇\n1: ちなじゅん運送\n2: それ以外");
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】1 か 2 を送信してください。\n1: 請求書　2: 支払い通知書");
+            return sendMsg(channel, '【システム】宛先を選択してください👇\n1: ちなじゅん運送\n2: それ以外');
         }
+        return sendMsg(channel, '【システム】1 または 2 を送信してください。');
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_payment_dest') {
-        if (userMessage === '1' || userMessage === '2') {
-            const destType = userMessage === '1' ? 'chinajun' : 'other';
-            const destName = userMessage === '1' ? 'ちなじゅん運送 井後陽輔' : '';
-            userStates[userId].paymentDestType = destType;
-            userStates[userId].paymentDestName = destName;
-            const fileId = userStates[userId].pendingFileId;
-            if (userMessage === '2') {
-                // それ以外は宛先名を聞く
-                userStates[userId].state = 'awaiting_payment_dest_name';
-                return lineWorksApi.sendTextMessage(userId, "【システム】宛先の会社名を入力してください");
+    // 支払い宛先選択
+    if (state === 'awaiting_payment_dest') {
+        if (userMessage === '1') {
+            userStates[userId] = { ...st, paymentDestType: 'chinajun', paymentDestName: 'ちなじゅん運送 井後陽輔' };
+            return processImageOCR(userId);
+        } else if (userMessage === '2') {
+            userStates[userId] = { ...st, paymentDestType: 'other', state: 'awaiting_payment_dest_name' };
+            return sendMsg(channel, '【システム】宛先の会社名を入力してください');
+        }
+        return sendMsg(channel, '【システム】1 または 2 を送信してください。');
+    }
+
+    // 宛先名入力
+    if (state === 'awaiting_payment_dest_name') {
+        userStates[userId] = { ...st, paymentDestName: userMessage };
+        return processImageOCR(userId);
+    }
+
+    // OCR確認
+    if (state === 'awaiting_ocr_confirm') {
+        const { invoiceData, docType, paymentDestType, paymentDestName } = st;
+
+        if (userMessage === '1') {
+            userStates[userId].state = 'processing';
+            await sendMsg(channel, '【システム】承知しました！PDFを作成しています...⏳');
+
+            let scriptPath, scriptArgs;
+            if (docType === 'payment') {
+                scriptPath = path.join(workDir, 'payment_notice.py');
+                scriptArgs = ['--payment-json', JSON.stringify({ destType: paymentDestType, destName: paymentDestName, items: invoiceData.items })];
+            } else {
+                scriptPath = path.join(workDir, 'batch_gen.py');
+                scriptArgs = ['--generate-from-json', JSON.stringify(invoiceData)];
             }
-            processImageOCR(userId, fileId).catch(e => console.error(e));
-            return Promise.resolve(null);
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】1 か 2 を送信してください。\n1: ちなじゅん運送　2: それ以外");
+
+            try {
+                const stdout = await runPython(scriptPath, scriptArgs, workDir);
+                const pdfMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
+                if (!pdfMatch) throw new Error('PDFパスが見つかりません\n' + stdout);
+                const pdfPath = pdfMatch[1].trim();
+                const completedLabel = docType === 'payment' ? '支払い通知書' : '請求書';
+                await sendPdf(channel, pdfPath, `${completedLabel}：${path.basename(pdfPath)}`, st.originalMsg);
+                await sendMsg(channel, `✅ ${completedLabel}が完成しました！`);
+                finishAndProcessNext(userId);
+            } catch (e) {
+                console.error('PDF生成エラー:', e);
+                await sendMsg(channel, `【エラー】PDF生成に失敗しました💦\n${e.stderr?.substring(0, 300) || e.error?.message || String(e)}`);
+                finishAndProcessNext(userId);
+            }
+            return;
         }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_payment_dest_name') {
-        userStates[userId].paymentDestName = userMessage.trim();
-        const fileId = userStates[userId].pendingFileId;
-        processImageOCR(userId, fileId).catch(e => console.error(e));
-        return Promise.resolve(null);
-
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_ocr_confirm') {
-        const isYes = userMessage === 'はい' || userMessage === 'ハイ' || userMessage.toLowerCase() === 'yes' || userMessage === '1';
-        const isNo = userMessage === 'キャンセル' || userMessage === 'いいえ' || userMessage === 'イイエ' || userMessage.toLowerCase() === 'no' || userMessage === '2';
-
-        if (isYes) {
-            const invoiceData = userStates[userId].invoiceData;
-            const savedDocType = userStates[userId].docType || 'invoice';
-            const savedDestType = userStates[userId].paymentDestType || 'other';
-            const savedDestName = userStates[userId].paymentDestName || '';
-            userStates[userId].state = 'processing';
-
-            return new Promise(async (resolve) => {
-                await lineWorksApi.sendTextMessage(userId, "【システム】承知しました！PDFを作成しています...⏳").catch(e => console.error(e));
-
-                const workDir = path.join(rootDir, '請求書作成', 'App_Core');
-                const pythonExe = process.env.PYTHON_CMD || 'python';
-                const execOptions = { cwd: workDir, env: { ...process.env } };
-
-                let scriptPath, scriptArgs;
-                if (savedDocType === 'payment') {
-                    scriptPath = path.join(workDir, 'payment_notice.py');
-                    const payload = JSON.stringify({ destType: savedDestType, destName: savedDestName, items: invoiceData.items });
-                    scriptArgs = ['--payment-json', payload];
-                } else {
-                    scriptPath = path.join(workDir, 'batch_gen.py');
-                    scriptArgs = ['--generate-from-json', JSON.stringify(invoiceData)];
-                }
-
-                execFile(pythonExe, [scriptPath, ...scriptArgs], execOptions, async (error, stdout, stderr) => {
-                    if (error) {
-                        console.error(`実行エラー: ${error.message}\n${stderr}`);
-                        let errDetails = stderr ? stderr.substring(0, 500) : error.message.substring(0, 500);
-                        await lineWorksApi.sendTextMessage(userId, `【システムエラー詳細】\nPDF生成に失敗しました。\n\n詳細:\n${errDetails}\n\nこの画面をスクショして開発者に送付してください💦`).catch(e => console.error(e));
-                        finishAndProcessNext(userId);
-                        return resolve(null);
-                    }
-
-                    // PDFパスの抽出
-                    let pdfPathMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
-                    if (!pdfPathMatch || !pdfPathMatch[1]) {
-                        await lineWorksApi.sendTextMessage(userId, "【システム】PDFが見つかりませんでした💦").catch(e => console.error(e));
-                        finishAndProcessNext(userId);
-                        return resolve(null);
-                    }
-
-                    const latestPdfPath = pdfPathMatch[1].trim();
-                    const foundFilename = path.basename(latestPdfPath);
-
-                    const completedLabel = savedDocType === 'payment' ? '支払い通知書' : '請求書';
-                    await lineWorksApi.sendTextMessage(userId, `【システム】${completedLabel}が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
-                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error :", err));
-                    sendPdfToDiscord(latestPdfPath, `${completedLabel}：${foundFilename}`).catch(e => console.error(e));
-
-                    await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n（10秒以内に返答がない場合は自動でスキップします）").catch(err => console.error(err));
-                    userStates[userId] = { state: 'awaiting_image_delete' };
-
-                    // 10秒後にキューを自動で進める
-                    setTimeout(() => {
-                        if (userStates[userId] && userStates[userId].state === 'awaiting_image_delete') {
-                            console.log(`[タイムアウト] ${userId} の画像削除確認がタイムアウト → キューを進めます`);
-                            finishAndProcessNext(userId);
-                        }
-                    }, 10000);
-
-                    resolve(null);
-                });
-            });
-        } else if (isNo) {
+        if (userMessage === '2') {
             finishAndProcessNext(userId);
-            return lineWorksApi.sendTextMessage(userId, "【システム】作成をキャンセルしました。手動で作成する場合は「請求書」と送信してください。");
-        } else {
-            return new Promise(async (resolve) => {
-                await lineWorksApi.sendTextMessage(userId, "【システム】AIが内容を修正しています... 少々お待ちください🤖").catch(e => console.error(e));
-                try {
-                    const rawTextContext = userStates[userId].invoiceData.raw_text ? `\n【レシートの元の読み取りテキスト（参考）】\n${userStates[userId].invoiceData.raw_text}\n` : '';
-                    const prompt = `あなたは請求書の項目の修正アシスタントです。
-以下の現在のJSONデータに対して、ユーザーの指示通りの修正を行ってください。
-修正後の結果は、元のJSONと全く同じスキーマ（必ず { "items": [ ... ] } の形式）のJSONのみを出力してください。Markdownのバッククォートなどは付けないこと。
-${rawTextContext}
-【現在のJSON】
-${JSON.stringify(userStates[userId].invoiceData.items)}
+            return sendMsg(channel, '【システム】キャンセルしました。');
+        }
 
-【ユーザーの指示】
-${userMessage}`;
-
-                    const response = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash-lite',
-                        contents: prompt,
-                        config: {
-                            temperature: 0.1,
-                            responseMimeType: "application/json"
-                        }
-                    });
-
-                    let newJsonStr = response.text;
-                    const jsonMatch = newJsonStr.match(/\{[\s\S]*\}/);
-                    if (jsonMatch) {
-                        newJsonStr = jsonMatch[0];
-                    }
-
-                    let newData;
-                    try {
-                        newData = JSON.parse(newJsonStr);
-                        if (Array.isArray(newData)) {
-                            newData = { items: newData };
-                        } else if (!newData.items) {
-                            newData = { items: [] };
-                        }
-                    } catch (err) {
-                        throw new Error("JSON Parse Error");
-                    }
-
-                    userStates[userId].invoiceData.items = newData.items;
-
-                    let confirmText = "【システム】修正が完了しました！以下の内容でよろしいですか？👀\n\n【商品リスト】\n";
-                    let total = 0;
-                    newData.items.forEach(it => {
-                        confirmText += `- ${it.name} ${it.qty}個 (¥${it.total.toLocaleString()})\n`;
-                        total += it.total;
-                    });
-                    confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【さらに修正がある場合】\nもう一度指示を送信してください。`;
-
-                    await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
-                    resolve(null);
-                } catch (e) {
-                    console.error("Gemini correction error:", e);
-                    const errMsg = e.message || String(e);
-                    await lineWorksApi.sendTextMessage(userId, `【エラー】AIによる修正に失敗しました💦\n原因: ${errMsg}\n\n「2」で一度キャンセルしてください。`).catch(e => console.error(e));
-                    resolve(null);
-                }
+        // 修正指示（AIで再解釈）
+        const fixMatch = userMessage.match(/(.+?)\s+([\d,]+)円\s*(\d+)(個|枚|台|件)?/);
+        if (fixMatch) {
+            const unit = parseInt(fixMatch[2].replace(/,/g, ''), 10);
+            const qty  = parseInt(fixMatch[3], 10);
+            invoiceData.items.push({ name: fixMatch[1].trim(), unit, qty, total: unit * qty });
+            const total = invoiceData.items.reduce((s, it) => s + it.total, 0);
+            const docLabel = docType === 'payment' ? '支払い通知書' : '請求書';
+            let confirmText = '【システム】追加しました！更新内容：\n\n';
+            invoiceData.items.forEach((it, i) => {
+                confirmText += `${i+1}. ${it.name} ¥${it.unit.toLocaleString()} × ${it.qty}個 = ¥${it.total.toLocaleString()}\n`;
             });
+            confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で${docLabel}を作成してもよろしいですか？\n1: はい\n2: キャンセル`;
+            userStates[userId].invoiceData = invoiceData;
+            return sendMsg(channel, confirmText);
         }
+        return sendMsg(channel, '【システム】1: はい / 2: キャンセル を送信するか、修正内容を「〇〇 6,200円 1個」の形式で送ってください。');
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_dest') {
-        if (['1', '2', '3', '4'].includes(userMessage)) {
-            userStates[userId].state = 'awaiting_qty';
-            userStates[userId].destChoice = userMessage;
-            return lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の個数を教えてください！（半角数字のみ）");
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1 から 4 のいずれかを入力してください。\n（やめる場合は「キャンセル」と入力）");
-        }
+    // ============================================================
+    // 手動請求書作成フロー
+    // ============================================================
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_qty') {
-        const qty = parseInt(userMessage, 10);
-        if (!isNaN(qty) && qty > 0) {
-            const destChoice = userStates[userId].destChoice;
-            userStates[userId].state = 'processing';
+    if (state === 'awaiting_manual_dest') {
+        userStates[userId] = { state: 'awaiting_manual_content', manualDest: userMessage, manualItems: [] };
+        return sendMsg(channel, '【システム】内容を教えてください');
+    }
 
-            return new Promise(async (resolve) => {
-                await lineWorksApi.sendTextMessage(userId, "【システム】個数を承知しました！請求書を作成しています...⏳").catch(e => console.error(e));
+    if (state === 'awaiting_manual_content') {
+        userStates[userId] = { ...st, state: 'awaiting_manual_price', manualContent: userMessage };
+        return sendMsg(channel, '【システム】金額（単価）を半角数字で教えてください');
+    }
 
-                const scriptPath = path.join(rootDir, '請求書作成', 'App_Core', 'pick_invoice.py');
-                const workDir = path.dirname(scriptPath);
-                const pythonExe = process.env.PYTHON_CMD || 'python';
-
-                exec(`"${pythonExe}" "${scriptPath}" ${destChoice} ${qty}`, { cwd: workDir }, async (error, stdout, stderr) => {
-                    if (error) {
-                        console.error(`実行エラー: ${error}`);
-                        await lineWorksApi.sendTextMessage(userId, `【エラー】ピック用請求書の作成に失敗しました💦\n${error.message}`).catch(e => console.error(e));
-                        delete userStates[userId];
-                        return resolve(null);
-                    }
-
-                    // 最新のピック依頼用PDFを探す
-                    let latestPdfPath = null;
-                    let latestTime = 0;
-                    let foundFilename = null;
-
-                    if (fs.existsSync(invoiceOutDir)) {
-                        const searchDirs = (dir) => {
-                            for (const entry of fs.readdirSync(dir)) {
-                                const p = path.join(dir, entry);
-                                if (fs.statSync(p).isDirectory()) { searchDirs(p); }
-                                else if (entry.endsWith('.pdf')) {
-                                    const stat = fs.statSync(p);
-                                    if (stat.mtimeMs > latestTime) {
-                                        latestTime = stat.mtimeMs; latestPdfPath = p; foundFilename = entry;
-                                    }
-                                }
-                            }
-                        };
-                        searchDirs(invoiceOutDir);
-                    }
-
-                    if (!latestPdfPath) {
-                        await lineWorksApi.sendTextMessage(userId, "【システム】スクリプトは成功しましたが、ピック用のPDFが見つかりませんでした💦").catch(e => console.error(e));
-                        delete userStates[userId];
-                        return resolve(null);
-                    }
-
-                    let destName = 'その他';
-                    if (destChoice === '1') destName = 'ミナミトランスポートレーション';
-                    else if (destChoice === '2') destName = 'TUYOSHI';
-                    else if (destChoice === '3') destName = '株式会社りんご';
-                    else if (destChoice === '4') destName = '寺本康太';
-
-                    await lineWorksApi.sendTextMessage(userId, `【システム】${destName}宛 (${qty}個) の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
-                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error (PDF送信):", err.message || err));
-                    sendPdfToDiscord(latestPdfPath, `請求書：${foundFilename}`).catch(e => console.error(e));
-
-                    // ※LINE WORKS のローディングスピナー対策：ファイル送信直後に明示的にテキストメッセージを添える
-                    await lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の作成が完了しました！🧾").catch(e => console.error(e));
-
-                    delete userStates[userId];
-                    resolve(null);
-                });
-            });
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 有効な数字（1以上の整数）を入力してください。\n（やめる場合は「キャンセル」と入力）");
-        }
-
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_dest') {
-        userStates[userId].manualDest = userMessage;
-        userStates[userId].manualItems = [];
-        userStates[userId].state = 'awaiting_manual_content';
-        return lineWorksApi.sendTextMessage(userId, "【システム】内容を教えてください");
-
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_content') {
-        userStates[userId].manualContent = userMessage;
-        userStates[userId].state = 'awaiting_manual_price';
-        return lineWorksApi.sendTextMessage(userId, "【システム】金額（単価）を半角数字で教えてください");
-
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_price') {
+    if (state === 'awaiting_manual_price') {
         const price = parseInt(userMessage, 10);
         if (!isNaN(price) && price >= 0) {
-            userStates[userId].manualPrice = price;
-            userStates[userId].state = 'awaiting_manual_qty';
-            return lineWorksApi.sendTextMessage(userId, "【システム】個数を半角数字で教えてください");
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 有効な数字を入力してください。");
+            userStates[userId] = { ...st, state: 'awaiting_manual_qty', manualPrice: price };
+            return sendMsg(channel, '【システム】個数を半角数字で教えてください');
         }
+        return sendMsg(channel, '【システム】有効な数字を入力してください。');
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_qty') {
-        const mqts = parseInt(userMessage, 10);
-        if (!isNaN(mqts) && mqts > 0) {
-            userStates[userId].manualQty = mqts;
-            userStates[userId].state = 'awaiting_manual_more';
-            const currentCount = (userStates[userId].manualItems || []).length + 1;
-            return lineWorksApi.sendTextMessage(userId, `【システム】${currentCount}品目を追加しました✅\n\n次の項目を追加しますか？\n1: 追加する\n2: これで完了（消費税確認へ）`);
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 有効な数字（1以上）を入力してください。");
+    if (state === 'awaiting_manual_qty') {
+        const qty = parseInt(userMessage, 10);
+        if (!isNaN(qty) && qty > 0) {
+            const item = { name: st.manualContent, unit: st.manualPrice, qty, total: st.manualPrice * qty };
+            userStates[userId] = { ...st, state: 'awaiting_manual_more', pendingItem: item };
+            return sendMsg(channel, `【システム】1品目を追加しました✅\n・${item.name} ¥${item.unit.toLocaleString()} × ${qty}個 = ¥${item.total.toLocaleString()}\n\n次の項目を追加しますか？\n1: 追加する\n2: これで完了（消費税確認へ）`);
         }
+        return sendMsg(channel, '【システム】有効な数字（1以上）を入力してください。');
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_more') {
+    if (state === 'awaiting_manual_more') {
         if (userMessage === '1') {
-            // 現在の商品をitemsに追加してループ
-            const price = userStates[userId].manualPrice;
-            const qty = userStates[userId].manualQty;
-            userStates[userId].manualItems.push({
-                name: userStates[userId].manualContent,
-                unit: price,
-                qty: qty,
-                total: price * qty
-            });
-            userStates[userId].manualContent = null;
-            userStates[userId].manualPrice = null;
-            userStates[userId].manualQty = null;
-            userStates[userId].state = 'awaiting_manual_content';
-            return lineWorksApi.sendTextMessage(userId, `【システム】では次の項目を入力してください。\n内容を教えてください`);
+            st.manualItems.push(st.pendingItem);
+            userStates[userId] = { ...st, state: 'awaiting_manual_content' };
+            return sendMsg(channel, '【システム】次の項目を入力してください。\n内容を教えてください');
         } else if (userMessage === '2') {
-            // 現在の商品をitemsに追加して消費税確認へ
-            const price = userStates[userId].manualPrice;
-            const qty = userStates[userId].manualQty;
-            userStates[userId].manualItems.push({
-                name: userStates[userId].manualContent,
-                unit: price,
-                qty: qty,
-                total: price * qty
-            });
-            userStates[userId].state = 'awaiting_manual_tax';
-            const items = userStates[userId].manualItems;
-            let summary = items.map((it, i) => `${i+1}. ${it.name} ${it.qty}個 ¥${it.unit.toLocaleString()}`).join('\n');
-            return lineWorksApi.sendTextMessage(userId, `【システム】合計${items.length}品目の入力が完了しました！\n\n${summary}\n\n税込みですか？税抜きですか？\n1: 税込み\n2: 税抜き`);
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】1 か 2 を送信してください。");
+            st.manualItems.push(st.pendingItem);
+            const items = st.manualItems;
+            userStates[userId] = { ...st, state: 'awaiting_manual_tax' };
+            const summary = items.map((it, i) => `${i+1}. ${it.name} ${it.qty}個 ¥${it.unit.toLocaleString()}`).join('\n');
+            return sendMsg(channel, `【システム】合計${items.length}品目の入力が完了しました！\n\n${summary}\n\n税込みですか？税抜きですか？\n1: 税込み\n2: 税抜き`);
         }
+        return sendMsg(channel, '【システム】1 か 2 を送信してください。');
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_tax') {
+    if (state === 'awaiting_manual_tax') {
         if (userMessage === '1' || userMessage === '2') {
-            userStates[userId].manualTaxType = userMessage;
-            userStates[userId].state = 'awaiting_manual_deadline';
-            return lineWorksApi.sendTextMessage(userId, "【システム】支払い期日を選択してください👇\n1: 作成日から1週間後\n2: 当月末\n3: 翌月末");
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1 または 2 を入力してください。\n（やめる場合は「キャンセル」と入力）");
+            userStates[userId] = { ...st, state: 'awaiting_manual_deadline', manualTaxType: userMessage };
+            return sendMsg(channel, '【システム】支払い期日を選択してください👇\n1: 作成日から1週間後\n2: 当月末\n3: 翌月末');
         }
+        return sendMsg(channel, '【システム】1 または 2 を入力してください。');
+    }
 
-    } else if (userStates[userId] && userStates[userId].state === 'awaiting_manual_deadline') {
+    if (state === 'awaiting_manual_deadline') {
         if (['1', '2', '3'].includes(userMessage)) {
-            const taxType = userStates[userId].manualTaxType;
-            const dest = userStates[userId].manualDest;
-            const items = userStates[userId].manualItems;
-            const deadlineType = userMessage; // '1'=1週間後 '2'=当月末 '3'=翌月末
-
-            userStates[userId].state = 'processing';
-
-            return new Promise(async (resolve) => {
-                await lineWorksApi.sendTextMessage(userId, "【システム】承知しました！請求書を作成しています...⏳").catch(e => console.error(e));
-
-                const scriptPath = path.join(rootDir, '請求書作成', 'App_Core', 'manual_invoice.py');
-                const workDir = path.dirname(scriptPath);
-                const pythonExe = process.env.PYTHON_CMD || 'python';
-
-                const payload = JSON.stringify({ dest, items, taxType, deadlineType });
-
-                const execOptions = { cwd: workDir, env: { ...process.env } };
-
-                execFile(pythonExe, [scriptPath, '--items-json', payload], execOptions, async (error, stdout, stderr) => {
-                    if (error) {
-                        console.error(`カスタム請求書実行エラー: ${error}\n${stderr}`);
-                        await lineWorksApi.sendTextMessage(userId, `【エラー】カスタム請求書の作成に失敗しました💦\n${error.message}`).catch(e => console.error(e));
-                        delete userStates[userId];
-                        return resolve(null);
-                    }
-
-                    let pdfPathMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
-                    if (!pdfPathMatch || !pdfPathMatch[1]) {
-                        // fallback: 最新ファイルを探索
-                        let latestPdfPath = null;
-                        let latestTime = 0;
-                        let foundFilename = null;
-                        if (fs.existsSync(invoiceOutDir)) {
-                            const searchDirs2 = (dir) => {
-                                for (const entry of fs.readdirSync(dir)) {
-                                    const p = path.join(dir, entry);
-                                    if (fs.statSync(p).isDirectory()) { searchDirs2(p); }
-                                    else if (entry.endsWith('.pdf')) {
-                                        const stat = fs.statSync(p);
-                                        if (stat.mtimeMs > latestTime) {
-                                            latestTime = stat.mtimeMs; latestPdfPath = p; foundFilename = entry;
-                                        }
-                                    }
-                                }
-                            };
-                            searchDirs2(invoiceOutDir);
-                        }
-                        if (!latestPdfPath) {
-                            await lineWorksApi.sendTextMessage(userId, "【システム】PDFが見つかりませんでした💦").catch(e => console.error(e));
-                            delete userStates[userId];
-                            return resolve(null);
-                        }
-                        pdfPathMatch = [null, latestPdfPath];
-                    }
-
-                    const latestPdfPath = pdfPathMatch[1].trim();
-                    const foundFilename = path.basename(latestPdfPath);
-
-                    await lineWorksApi.sendTextMessage(userId, `【システム】${dest}御中 の請求書が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
-                    await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error:", err.message || err));
-                    sendPdfToDiscord(latestPdfPath, `請求書：${foundFilename}`).catch(e => console.error(e));
-
-                    delete userStates[userId];
-                    resolve(null);
-                });
-            });
-        } else {
-            return lineWorksApi.sendTextMessage(userId, "【システム】エラー: 1・2・3 のいずれかを送信してください。\n（やめる場合は「キャンセル」と入力）");
+            userStates[userId] = { ...st, state: 'processing' };
+            await sendMsg(channel, '【システム】承知しました！請求書を作成しています...⏳');
+            const payload = JSON.stringify({ dest: st.manualDest, items: st.manualItems, taxType: st.manualTaxType, deadlineType: userMessage });
+            try {
+                const stdout = await runPython(path.join(workDir, 'manual_invoice.py'), ['--items-json', payload], workDir);
+                const pdfMatch = stdout.match(/___PDF_GENERATED___:(.+)/);
+                if (!pdfMatch) throw new Error('PDFパスが見つかりません');
+                const pdfPath = pdfMatch[1].trim();
+                await sendPdf(channel, pdfPath, `請求書：${path.basename(pdfPath)}`);
+                await sendMsg(channel, `✅ ${st.manualDest}御中の請求書が完成しました！`);
+                delete userStates[userId];
+            } catch (e) {
+                console.error('手動請求書エラー:', e);
+                await sendMsg(channel, `【エラー】請求書の作成に失敗しました💦\n${e.stderr?.substring(0, 300) || e.error?.message || String(e)}`);
+                delete userStates[userId];
+            }
+            return;
         }
+        return sendMsg(channel, '【システム】1・2・3 のいずれかを送信してください。');
     }
 
-    // --- 請求書作成（開始トリガー）の処理 ---
-    if (userMessage === "請求書作成") {
-        userStates[userId] = { state: 'awaiting_manual_dest' };
-        return lineWorksApi.sendTextMessage(userId, "【システム】指定請求書の作成を開始します！\n宛先を教えてください");
+    // ============================================================
+    // ピック依頼フロー
+    // ============================================================
+
+    if (state === 'awaiting_dest') {
+        if (['1', '2', '3', '4'].includes(userMessage)) {
+            userStates[userId] = { state: 'awaiting_qty', destChoice: userMessage };
+            return sendMsg(channel, '【システム】ピック依頼の個数を教えてください！（半角数字のみ）');
+        }
+        return sendMsg(channel, '【システム】1 から 4 のいずれかを入力してください。');
     }
 
-    // --- ピック依頼（開始トリガー）の処理 ---
-    if (userMessage === "ピック依頼") {
-        userStates[userId] = { state: 'awaiting_dest' };
-        return lineWorksApi.sendTextMessage(userId, "【システム】ピック依頼の請求書を作成します！\n宛先を選択してください：\n\n1: 株式会社ミナミトランスポートレーション\n2: 株式会社TUYOSHI\n3: 株式会社りんご\n4: 寺本康太\n\n（半角数字で「1」から「4」のいずれかを送信してください）");
-    }
+    if (state === 'awaiting_qty') {
+        const qty = parseInt(userMessage, 10);
+        if (!isNaN(qty) && qty > 0) {
+            const { destChoice } = st;
+            userStates[userId] = { state: 'processing' };
+            await sendMsg(channel, '【システム】個数を承知しました！請求書を作成しています...⏳');
 
-    // --- レシート画像読み取り（開始トリガー）の処理 ---
-    if (userMessage === "レシート読取" || userMessage === "レシート読み取り") {
-        userStates[userId] = { state: 'awaiting_receipt_image' };
-        return lineWorksApi.sendTextMessage(userId, "【システム】レシート画像から請求書を自動作成します！\n画像を送信してください📸");
-    }
-
-    // --- PC遠隔操作コマンドの処理 ---
-    if (userMessage === 'コマンド:メモ帳') {
-        return new Promise(async (resolve) => {
-            console.log("👉 LINE WORKSから遠隔操作コマンド「メモ帳起動」を受信しました！");
-            exec('notepad.exe', async (error, stdout, stderr) => {
-                let replyText = "【システム】PC側でメモ帳を起動しました！💻✨";
-                if (error) {
-                    console.error(`実行エラー: ${error}`);
-                    replyText = `【エラー】メモ帳の起動に失敗しました💦\n${error.message}`;
-                }
-                await lineWorksApi.sendTextMessage(userId, replyText).catch(e => console.error(e));
-                resolve(null);
-            });
-        });
-    }
-
-    if (userMessage === 'コマンド:注文確認') {
-        return new Promise(async (resolve) => {
-            console.log("👉 LINE WORKSから遠隔操作コマンド「注文確認」を受信しました！");
-            await lineWorksApi.sendTextMessage(userId, "【システム】注文確認スクリプトの実行を開始します... 少々お待ちください⏳").catch(e => console.error(e));
-
-            const scriptPath = path.join(rootDir, '注文確認', 'check_apple_orders.py');
-            const workDir = path.dirname(scriptPath);
+            const scriptPath = path.join(workDir, '..', 'App_Core', 'pick_invoice.py');
             const pythonExe = process.env.PYTHON_CMD || 'python';
-
-            // 環境変数を明示的に渡す (Render対応)
-            const execOptions = {
-                cwd: workDir,
-                env: { ...process.env }
-            };
-
-            exec(`"${pythonExe}" "${scriptPath}"`, execOptions, async (error, stdout, stderr) => {
-                let resultText = "【システム】スクリプトの実行が完了しました！✨\n（変更があれば別途通知されます）";
+            exec(`"${pythonExe}" "${scriptPath}" ${destChoice} ${qty}`, { cwd: workDir }, async (error, stdout, stderr) => {
                 if (error) {
-                    console.error(`実行エラー: ${error}`);
-                    resultText = `【エラー】実行に失敗しました💦\n${error.message}`;
+                    await sendMsg(channel, `【エラー】ピック用請求書の作成に失敗しました💦\n${error.message}`);
+                    delete userStates[userId];
+                    return;
                 }
+                // 最新PDFを探す
+                let latestPdfPath = null, latestTime = 0;
+                const searchDirs = (dir) => {
+                    for (const entry of fs.readdirSync(dir)) {
+                        const p = path.join(dir, entry);
+                        if (fs.statSync(p).isDirectory()) searchDirs(p);
+                        else if (entry.endsWith('.pdf')) {
+                            const t = fs.statSync(p).mtimeMs;
+                            if (t > latestTime) { latestTime = t; latestPdfPath = p; }
+                        }
+                    }
+                };
+                if (fs.existsSync(invoiceOutDir)) searchDirs(invoiceOutDir);
 
-                await lineWorksApi.sendTextMessage(userId, resultText).catch(e => console.error(e));
+                if (!latestPdfPath) {
+                    await sendMsg(channel, '【システム】PDFが見つかりませんでした💦');
+                    delete userStates[userId];
+                    return;
+                }
+                const destNames = { '1': 'ミナミトランスポートレーション', '2': 'TUYOSHI', '3': '株式会社りんご', '4': '寺本康太' };
+                const destName = destNames[destChoice] || 'その他';
+                await sendPdf(channel, latestPdfPath, `請求書：${path.basename(latestPdfPath)}`);
+                await sendMsg(channel, `✅ ${destName}宛 (${qty}個) の請求書が完成しました！🧾`);
+                delete userStates[userId];
             });
-            resolve(null);
-        });
+            return;
+        }
+        return sendMsg(channel, '【システム】有効な数字（1以上）を入力してください。');
     }
 
-    // ------------------------------
-    // Geminiとの自然言語チャット処理
-    try {
-        const sharedContextPath = path.join(__dirname, 'shared_context.txt');
-        let sharedContext = "";
-        if (fs.existsSync(sharedContextPath)) {
-            sharedContext = fs.readFileSync(sharedContextPath, 'utf8');
-        }
+    // ============================================================
+    // トリガーコマンド
+    // ============================================================
 
-        const systemInstruction = `あなたは親切な「秘書ちゃん」という優秀なアシスタントです。過去の会話の文脈を踏まえて自然に回答してください。
-また、あなたのPC側（開発環境側）のAIから、以下の情報が共有されています。この情報を前提知識として会話してください。
-【共有メモ情報】\n` + sharedContext;
-
-        if (!userChats[userId]) {
-            userChats[userId] = ai.chats.create({
-                model: 'gemini-2.5-flash-lite',
-                config: {
-                    systemInstruction: systemInstruction
-                }
-            });
-        }
-
-        const chat = userChats[userId];
-        console.log("DEBUG: Sending to Gemini...");
-        const response = await chat.sendMessage({ message: userMessage });
-        console.log("DEBUG: Received from Gemini:", response.text);
-
-        return lineWorksApi.sendTextMessage(userId, response.text);
-    } catch (err) {
-        console.error("Gemini Error:", err.message || err);
-        return lineWorksApi.sendTextMessage(userId, "ごめんなさい、AIの処理中にエラーが発生してしまいました💦");
+    if (userMessage === '請求書作成') {
+        userStates[userId] = { state: 'awaiting_manual_dest' };
+        return sendMsg(channel, '【システム】手動で請求書を作成します！\n宛先の会社名を入力してください', message);
     }
-}
 
-// 5. サーバーの起動とWebhookの設定
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`秘書ちゃんBotサーバー(LINE WORKS版)がクラウド上で稼働中です！（ポート: ${port}）`);
+    if (userMessage === 'ピック依頼') {
+        userStates[userId] = { state: 'awaiting_dest' };
+        return sendMsg(channel, '【システム】ピック依頼の請求書を作成します！\n宛先を選択してください：\n\n1: 株式会社ミナミトランスポートレーション\n2: 株式会社TUYOSHI\n3: 株式会社りんご\n4: 寺本康太\n\n（半角数字で送信してください）', message);
+    }
 
-    // Renderの無料枠（15分でスリープ）を防止するためのセルフPing機能
-    // 14分（840,000ミリ秒）ごとに自分自身にリクエストを送る
-    setInterval(() => {
-        const renderUrl = process.env.RENDER_EXTERNAL_URL;
-        if (renderUrl) {
-            https.get(`${renderUrl}/webhook`, (resp) => {
-                if (resp.statusCode === 200) {
-                    console.log('Keep-alive ping successful');
-                }
-            }).on("error", (err) => {
-                console.log("Keep-alive ping failed: " + err.message);
-            });
-        }
-    }, 840000); // 14 minutes
+    if (userMessage === 'ヘルプ' || userMessage === 'help') {
+        return sendMsg(channel, '【システム】使い方👇\n\n📸 **画像を貼る** → 請求書 or 支払い通知書を自動作成\n\n✏️ **テキストコマンド**\n・`請求書作成` → 手動で請求書を作成\n・`ピック依頼` → ピック依頼用請求書を作成\n・`キャンセル` → 操作を中断', message);
+    }
+});
+
+// ============================================================
+// Bot起動
+// ============================================================
+client.once('ready', () => {
+    console.log(`✅ Discord Bot起動: ${client.user.tag}`);
+    console.log(`📨 作成依頼チャンネル: ${REQUEST_CHANNEL_ID}`);
+    console.log(`📁 PDF保存チャンネル:  ${SAVE_CHANNEL_ID}`);
+});
+
+client.login(process.env.DISCORD_BOT_TOKEN).catch(e => {
+    console.error('Discord Bot ログイン失敗:', e.message);
+    console.error('DISCORD_BOT_TOKEN が設定されているか確認してください');
 });
