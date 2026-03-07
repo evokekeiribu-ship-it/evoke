@@ -223,7 +223,8 @@ async function processImageOCR(userId, fileId) {
             confirmText += `- ${it.name} ${it.qty}個 @¥${it.unit.toLocaleString()} = ¥${it.total.toLocaleString()}\n`;
             total += it.total;
         });
-        confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で請求書を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
+        const docLabel = docType === 'payment' ? '支払い通知書' : '請求書';
+        confirmText += `\n合計金額: ¥${total.toLocaleString()}\n\nこの内容で${docLabel}を作成してもよろしいですか？👇\n1: はい\n2: キャンセル\n\n【修正がある場合】\n「たまごっち 6,200円 1個 が抜けてるよ！」のようにメッセージを送ってください。`;
 
         await lineWorksApi.sendTextMessage(userId, confirmText).catch(e => console.error(e));
 
@@ -448,7 +449,8 @@ async function handleEvent(event) {
                     const latestPdfPath = pdfPathMatch[1].trim();
                     const foundFilename = path.basename(latestPdfPath);
 
-                    await lineWorksApi.sendTextMessage(userId, "【システム】請求書が完成しました！✨\nPDFファイルを送信します...").catch(e => console.error(e));
+                    const completedLabel = savedDocType === 'payment' ? '支払い通知書' : '請求書';
+                    await lineWorksApi.sendTextMessage(userId, `【システム】${completedLabel}が完成しました！✨\nPDFファイルを送信します...`).catch(e => console.error(e));
                     await lineWorksApi.sendFileMessage(userId, latestPdfPath, foundFilename).catch(err => console.error("Push Error :", err));
 
                     await lineWorksApi.sendTextMessage(userId, "【システム】元画像を直ちに削除しますか？👇\n1: はい\n2: いいえ\n（10秒以内に返答がない場合は自動でスキップします）").catch(err => console.error(err));
