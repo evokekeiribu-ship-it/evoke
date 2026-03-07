@@ -42,12 +42,8 @@ def generate_pdf(invoice_data):
     daily_out_dir = os.path.join(OUT_DIR, daily_folder_name, '請求書')
     os.makedirs(daily_out_dir, exist_ok=True)
 
-    count = 1
     file_prefix = f"請求書_株式会社ミナミトランスポートレーション御中{today_mmdd}-"
-    for fname in os.listdir(daily_out_dir):
-        if fname.startswith(file_prefix) and fname.endswith(".pdf"):
-            count += 1
-            
+    count = sum(1 for f in os.listdir(daily_out_dir) if f.endswith('.pdf')) + 1
     file_no = f"{count:02}"
     invoice_no = f"{today_str}-{file_no}"
     out_pdf_name = f"{file_prefix}{file_no}.pdf"

@@ -68,13 +68,9 @@ def generate_pdf(destination_name, content_name, unit_price, qty, tax_type, item
     os.makedirs(daily_out_dir, exist_ok=True)
 
     # 既存の同日ファイルを探索して連番を付与
-    count = 1
     safe_dest_name = re.sub(r'[\\/:*?"<>|]', '_', destination_name) # ファイル名に使えない文字をエスケープ
     file_prefix = f"請求書_{safe_dest_name}御中_{today_str}_"
-    for fname in os.listdir(daily_out_dir):
-        if fname.startswith(file_prefix) and fname.endswith(".pdf"):
-            count += 1
-            
+    count = sum(1 for f in os.listdir(daily_out_dir) if f.endswith('.pdf')) + 1
     file_no = f"{count:02}"
     invoice_no = f"{today_str}-M{file_no}"
     out_pdf_name = f"{file_prefix}{file_no}.pdf"
