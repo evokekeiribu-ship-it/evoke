@@ -62,6 +62,8 @@ async function sendMsg(channel, text, replyMsg = null) {
 
 async function sendPdf(channel, pdfPath, label, replyMsg = null) {
     const filename = path.basename(pdfPath);
+    console.log(`PDF送信開始: ${pdfPath} exists=${fs.existsSync(pdfPath)}`);
+    // 作成依頼チャンネルに送信
     try {
         const opts = {
             content: `📄 ${label}`,
@@ -69,8 +71,9 @@ async function sendPdf(channel, pdfPath, label, replyMsg = null) {
         };
         if (replyMsg) opts.reply = { messageReference: replyMsg.id, failIfNotExists: false };
         await channel.send(opts);
+        console.log('作成依頼チャンネル送信完了');
     } catch (e) {
-        console.error('作成依頼チャンネル送信エラー:', e);
+        console.error('作成依頼チャンネル送信エラー:', e.message);
     }
     // PDF保存チャンネルにも送信
     try {
@@ -79,8 +82,9 @@ async function sendPdf(channel, pdfPath, label, replyMsg = null) {
             content: `📄 ${label}`,
             files: [new AttachmentBuilder(pdfPath, { name: filename })]
         });
+        console.log('PDF保存チャンネル送信完了');
     } catch (e) {
-        console.error('PDF保存チャンネル送信エラー:', e);
+        console.error('PDF保存チャンネル送信エラー:', e.message, 'channel:', SAVE_CHANNEL_ID);
     }
 }
 
@@ -126,17 +130,11 @@ async function processImageOCR(userId) {
         const base64Image = fs.readFileSync(tmpPath).toString('base64');
         fs.unlinkSync(tmpPath);
 
-        const adjustRule = docType === 'payment'
-            ? '・20,000円以上の単価: -100円\n・20,000円未満の単価: -50円'
-            : '・20,000円以上の単価: -100円\n・20,000円未満の単価: -20円';
-
         const prompt = `この画像は運送業の請求書またはレシートです。画像に含まれる全ての明細行を一行も省略せずに全て抽出してください。
-各行の作業内容・単価・数量を特定してください。
-単価の調整ルール（抽出後に適用）:
-${adjustRule}
+各行の作業内容・単価（調整前の元の値）・数量を特定してください。
 
 以下のJSON形式のみで返してください:
-{"items": [{"name": "作業内容", "unit": 単価調整後の数値, "qty": 数量}]}`;
+{"items": [{"name": "作業内容", "unit": 元の単価の数値, "qty": 数量}]}`;
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -152,8 +150,16 @@ ${adjustRule}
 
         const parsed = JSON.parse(jsonMatch[0]);
         const items = parsed.items.map(item => {
-            const unit = parseInt(String(item.unit).replace(/[^0-9\-]/g, ''), 10) || 0;
+            let unit = parseInt(String(item.unit).replace(/[^0-9\-]/g, ''), 10) || 0;
             const qty  = parseInt(String(item.qty).replace(/[^0-9]/g, ''), 10) || 1;
+            // 単価調整（プログラムで実施）
+            if (unit > 0) {
+                if (docType === 'payment') {
+                    unit = unit >= 20000 ? unit - 100 : unit - 50;
+                } else {
+                    unit = unit >= 20000 ? unit - 100 : unit - 20;
+                }
+            }
             return { name: item.name, unit, qty, total: unit * qty };
         });
 
@@ -262,8 +268,12 @@ client.on('messageCreate', async (message) => {
                 scriptPath = path.join(workDir, 'payment_notice.py');
                 scriptArgs = ['--payment-json', JSON.stringify({ destType: paymentDestType, destName: paymentDestName, items: invoiceData.items })];
             } else {
+                // batch_gen.py には deadline が必須（OCRフローはデフォルト1週間後）
+                const deadline = new Date();
+                deadline.setDate(deadline.getDate() + 7);
+                const invoicePayload = { ...invoiceData, deadline: deadline.toISOString() };
                 scriptPath = path.join(workDir, 'batch_gen.py');
-                scriptArgs = ['--generate-from-json', JSON.stringify(invoiceData)];
+                scriptArgs = ['--generate-from-json', JSON.stringify(invoicePayload)];
             }
 
             try {
