@@ -64,7 +64,7 @@ def generate_pdf(destination_name, content_name, unit_price, qty, tax_type, item
     deadline_jp = deadline.strftime('%Y年%m月%d日')
 
     daily_folder_name = today.strftime('%Y-%m-%d')
-    daily_out_dir = os.path.join(OUT_DIR, daily_folder_name)
+    daily_out_dir = os.path.join(OUT_DIR, daily_folder_name, '請求書')
     os.makedirs(daily_out_dir, exist_ok=True)
 
     # 既存の同日ファイルを探索して連番を付与

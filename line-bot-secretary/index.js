@@ -574,24 +574,19 @@ ${userMessage}`;
                     let foundFilename = null;
 
                     if (fs.existsSync(invoiceOutDir)) {
-                        const dateFolders = fs.readdirSync(invoiceOutDir);
-                        for (const dFolder of dateFolders) {
-                            const folderPath = path.join(invoiceOutDir, dFolder);
-                            if (fs.statSync(folderPath).isDirectory()) {
-                                const files = fs.readdirSync(folderPath);
-                                for (const file of files) {
-                                    if (file.includes('-P') && file.endsWith('.pdf')) {
-                                        const filePath = path.join(folderPath, file);
-                                        const stat = fs.statSync(filePath);
-                                        if (stat.mtimeMs > latestTime) {
-                                            latestTime = stat.mtimeMs;
-                                            latestPdfPath = filePath;
-                                            foundFilename = file;
-                                        }
+                        const searchDirs = (dir) => {
+                            for (const entry of fs.readdirSync(dir)) {
+                                const p = path.join(dir, entry);
+                                if (fs.statSync(p).isDirectory()) { searchDirs(p); }
+                                else if (entry.endsWith('.pdf')) {
+                                    const stat = fs.statSync(p);
+                                    if (stat.mtimeMs > latestTime) {
+                                        latestTime = stat.mtimeMs; latestPdfPath = p; foundFilename = entry;
                                     }
                                 }
                             }
-                        }
+                        };
+                        searchDirs(invoiceOutDir);
                     }
 
                     if (!latestPdfPath) {
@@ -730,24 +725,19 @@ ${userMessage}`;
                         let latestTime = 0;
                         let foundFilename = null;
                         if (fs.existsSync(invoiceOutDir)) {
-                            const dateFolders = fs.readdirSync(invoiceOutDir);
-                            for (const dFolder of dateFolders) {
-                                const folderPath = path.join(invoiceOutDir, dFolder);
-                                if (fs.statSync(folderPath).isDirectory()) {
-                                    const files = fs.readdirSync(folderPath);
-                                    for (const file of files) {
-                                        if (file.endsWith('.pdf')) {
-                                            const filePath = path.join(folderPath, file);
-                                            const stat = fs.statSync(filePath);
-                                            if (stat.mtimeMs > latestTime) {
-                                                latestTime = stat.mtimeMs;
-                                                latestPdfPath = filePath;
-                                                foundFilename = file;
-                                            }
+                            const searchDirs2 = (dir) => {
+                                for (const entry of fs.readdirSync(dir)) {
+                                    const p = path.join(dir, entry);
+                                    if (fs.statSync(p).isDirectory()) { searchDirs2(p); }
+                                    else if (entry.endsWith('.pdf')) {
+                                        const stat = fs.statSync(p);
+                                        if (stat.mtimeMs > latestTime) {
+                                            latestTime = stat.mtimeMs; latestPdfPath = p; foundFilename = entry;
                                         }
                                     }
                                 }
-                            }
+                            };
+                            searchDirs2(invoiceOutDir);
                         }
                         if (!latestPdfPath) {
                             await lineWorksApi.sendTextMessage(userId, "【システム】PDFが見つかりませんでした💦").catch(e => console.error(e));

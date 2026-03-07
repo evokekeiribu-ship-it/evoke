@@ -39,7 +39,7 @@ def generate_pdf(invoice_data):
 
     # 日付ごとのフォルダを作成
     daily_folder_name = today.strftime('%Y-%m-%d')
-    daily_out_dir = os.path.join(OUT_DIR, daily_folder_name)
+    daily_out_dir = os.path.join(OUT_DIR, daily_folder_name, '請求書')
     os.makedirs(daily_out_dir, exist_ok=True)
 
     count = 1

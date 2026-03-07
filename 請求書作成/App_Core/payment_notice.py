@@ -39,7 +39,7 @@ def generate_pdf(dest_type, dest_name, items):
 
     # --- 出力ディレクトリ ---
     daily_folder = today.strftime('%Y-%m-%d')
-    daily_out_dir = os.path.join(OUT_DIR, daily_folder)
+    daily_out_dir = os.path.join(OUT_DIR, daily_folder, '支払い通知書')
     os.makedirs(daily_out_dir, exist_ok=True)
 
     # --- ファイル連番 ---
