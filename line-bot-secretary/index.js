@@ -380,7 +380,7 @@ async function handleEvent(event) {
     } else if (userStates[userId] && userStates[userId].state === 'awaiting_payment_dest') {
         if (userMessage === '1' || userMessage === '2') {
             const destType = userMessage === '1' ? 'chinajun' : 'other';
-            const destName = userMessage === '1' ? 'ちなじゅん運送' : '';
+            const destName = userMessage === '1' ? 'ちなじゅん運送 井後陽輔' : '';
             userStates[userId].paymentDestType = destType;
             userStates[userId].paymentDestName = destName;
             const fileId = userStates[userId].pendingFileId;
