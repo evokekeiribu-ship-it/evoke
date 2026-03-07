@@ -481,7 +481,16 @@ client.once('ready', () => {
     console.log(`📁 PDF保存チャンネル:  ${SAVE_CHANNEL_ID}`);
 });
 
-client.login(process.env.DISCORD_BOT_TOKEN).catch(e => {
-    console.error('Discord Bot ログイン失敗:', e.message);
-    console.error('DISCORD_BOT_TOKEN が設定されているか確認してください');
-});
+const token = process.env.DISCORD_BOT_TOKEN;
+console.log('DISCORD_BOT_TOKEN:', token ? `設定済み(${token.length}文字)` : '★未設定★');
+
+if (!token) {
+    console.error('★ DISCORD_BOT_TOKEN が設定されていません。Renderの環境変数を確認してください。');
+} else {
+    client.login(token)
+        .then(() => console.log('Discord login Promise resolved'))
+        .catch(e => {
+            console.error('Discord Bot ログイン失敗:', e.message);
+            console.error('スタック:', e.stack?.substring(0, 300));
+        });
+}
