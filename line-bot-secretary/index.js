@@ -47,18 +47,21 @@ async function sendPdfToDiscord(pdfPath, label) {
     try {
         const fileData = fs.readFileSync(pdfPath);
         const filename = path.basename(pdfPath);
-        const boundary = '----FormBoundary' + Date.now().toString(16);
-        const nl = '\r\n';
-        let body = '';
-        body += `--${boundary}${nl}`;
-        body += `Content-Disposition: form-data; name="content"${nl}${nl}`;
-        body += `📄 ${label}${nl}`;
-        body += `--${boundary}${nl}`;
-        body += `Content-Disposition: form-data; name="file"; filename="${encodeURIComponent(filename)}"${nl}`;
-        body += `Content-Type: application/pdf${nl}${nl}`;
-        const prefix = Buffer.from(body, 'utf8');
-        const suffix = Buffer.from(`${nl}--${boundary}--${nl}`, 'utf8');
-        const payload = Buffer.concat([prefix, fileData, suffix]);
+        const boundary = '----DiscordBoundary' + Date.now().toString(16);
+        const CRLF = '\r\n';
+
+        const partContent = Buffer.from(
+            `--${boundary}${CRLF}` +
+            `Content-Disposition: form-data; name="content"${CRLF}${CRLF}` +
+            `📄 ${label}${CRLF}`, 'utf8'
+        );
+        const partFileHeader = Buffer.from(
+            `--${boundary}${CRLF}` +
+            `Content-Disposition: form-data; name="files[0]"; filename="${filename}"${CRLF}` +
+            `Content-Type: application/pdf${CRLF}${CRLF}`, 'utf8'
+        );
+        const partEnd = Buffer.from(`${CRLF}--${boundary}--${CRLF}`, 'utf8');
+        const payload = Buffer.concat([partContent, partFileHeader, fileData, partEnd]);
 
         const webhookUrl = new URL(DISCORD_WEBHOOK_URL);
         await new Promise((resolve) => {
@@ -73,7 +76,7 @@ async function sendPdfToDiscord(pdfPath, label) {
             }, (res) => {
                 let data = '';
                 res.on('data', d => data += d);
-                res.on('end', () => { console.log(`Discord保存完了: ${filename} (${res.statusCode})`); resolve(); });
+                res.on('end', () => { console.log(`Discord保存: ${filename} status=${res.statusCode} body=${data}`); resolve(); });
             });
             req.on('error', (e) => { console.error('Discord送信エラー:', e); resolve(); });
             req.write(payload);
