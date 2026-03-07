@@ -39,36 +39,34 @@ const rootDir = path.dirname(__dirname); // __dirname is line-bot-secretary, roo
 const invoiceInDir = path.join(rootDir, '請求書作成', '請求書作成依頼');
 const invoiceOutDir = path.join(rootDir, '請求書作成', '作成済み請求書');
 
-// Discord PDF保存チャンネル
-const DISCORD_SAVE_CHANNEL_ID = '1479775022808563854';
-const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+// Discord PDF保存 (Webhook方式)
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 async function sendPdfToDiscord(pdfPath, label) {
-    if (!DISCORD_BOT_TOKEN) return;
+    if (!DISCORD_WEBHOOK_URL) { console.log('DISCORD_WEBHOOK_URL未設定のためスキップ'); return; }
     try {
         const fileData = fs.readFileSync(pdfPath);
         const filename = path.basename(pdfPath);
         const boundary = '----FormBoundary' + Date.now().toString(16);
         const nl = '\r\n';
-        const caption = `📄 ${label}`;
         let body = '';
         body += `--${boundary}${nl}`;
         body += `Content-Disposition: form-data; name="content"${nl}${nl}`;
-        body += `${caption}${nl}`;
+        body += `📄 ${label}${nl}`;
         body += `--${boundary}${nl}`;
-        body += `Content-Disposition: form-data; name="file"; filename="${filename}"${nl}`;
+        body += `Content-Disposition: form-data; name="file"; filename="${encodeURIComponent(filename)}"${nl}`;
         body += `Content-Type: application/pdf${nl}${nl}`;
         const prefix = Buffer.from(body, 'utf8');
         const suffix = Buffer.from(`${nl}--${boundary}--${nl}`, 'utf8');
         const payload = Buffer.concat([prefix, fileData, suffix]);
 
-        await new Promise((resolve, reject) => {
+        const webhookUrl = new URL(DISCORD_WEBHOOK_URL);
+        await new Promise((resolve) => {
             const req = https.request({
-                hostname: 'discord.com',
-                path: `/api/v10/channels/${DISCORD_SAVE_CHANNEL_ID}/messages`,
+                hostname: webhookUrl.hostname,
+                path: webhookUrl.pathname + webhookUrl.search,
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bot ${DISCORD_BOT_TOKEN}`,
                     'Content-Type': `multipart/form-data; boundary=${boundary}`,
                     'Content-Length': payload.length
                 }
