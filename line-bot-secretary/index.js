@@ -483,14 +483,31 @@ client.once('ready', () => {
 
 const token = process.env.DISCORD_BOT_TOKEN;
 console.log('DISCORD_BOT_TOKEN:', token ? `設定済み(${token.length}文字)` : '★未設定★');
+console.log('Node.js version:', process.version);
+
+process.on('uncaughtException', (e) => console.error('★ uncaughtException:', e.message));
+process.on('unhandledRejection', (e) => console.error('★ unhandledRejection:', e?.message || e));
+
+client.on('error', (e) => console.error('★ Discord client error:', e.message));
+client.on('warn', (msg) => console.warn('Discord warn:', msg));
+client.on('debug', (msg) => { if (msg.includes('Identified') || msg.includes('READY') || msg.includes('error') || msg.includes('Error')) console.log('Discord debug:', msg); });
 
 if (!token) {
-    console.error('★ DISCORD_BOT_TOKEN が設定されていません。Renderの環境変数を確認してください。');
+    console.error('★ DISCORD_BOT_TOKEN が未設定です');
 } else {
+    console.log('Discord login 開始...');
+    const loginTimer = setTimeout(() => {
+        console.error('★ Discord login 30秒タイムアウト！WebSocket接続がブロックされている可能性があります');
+    }, 30000);
+
     client.login(token)
-        .then(() => console.log('Discord login Promise resolved'))
+        .then(() => {
+            clearTimeout(loginTimer);
+            console.log('Discord login Promise resolved ✅');
+        })
         .catch(e => {
-            console.error('Discord Bot ログイン失敗:', e.message);
-            console.error('スタック:', e.stack?.substring(0, 300));
+            clearTimeout(loginTimer);
+            console.error('★ Discord Bot ログイン失敗:', e.message);
+            console.error('スタック:', e.stack?.substring(0, 500));
         });
 }
