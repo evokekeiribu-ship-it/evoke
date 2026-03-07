@@ -5,6 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec, execFile } = require('child_process');
 const https = require('https');
+const axios = require('axios');
+const FormData = require('form-data');
 
 // LINE WORKS API 用の独自モジュール
 const lineWorksApi = require('./lineWorksApi');
@@ -45,45 +47,15 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 async function sendPdfToDiscord(pdfPath, label) {
     if (!DISCORD_WEBHOOK_URL) { console.log('DISCORD_WEBHOOK_URL未設定のためスキップ'); return; }
     try {
-        const fileData = fs.readFileSync(pdfPath);
         const filename = path.basename(pdfPath);
-        const boundary = '----DiscordBoundary' + Date.now().toString(16);
-        const CRLF = '\r\n';
-
-        const partContent = Buffer.from(
-            `--${boundary}${CRLF}` +
-            `Content-Disposition: form-data; name="content"${CRLF}${CRLF}` +
-            `📄 ${label}${CRLF}`, 'utf8'
-        );
-        const partFileHeader = Buffer.from(
-            `--${boundary}${CRLF}` +
-            `Content-Disposition: form-data; name="files[0]"; filename="${filename}"${CRLF}` +
-            `Content-Type: application/pdf${CRLF}${CRLF}`, 'utf8'
-        );
-        const partEnd = Buffer.from(`${CRLF}--${boundary}--${CRLF}`, 'utf8');
-        const payload = Buffer.concat([partContent, partFileHeader, fileData, partEnd]);
-
-        const webhookUrl = new URL(DISCORD_WEBHOOK_URL);
-        await new Promise((resolve) => {
-            const req = https.request({
-                hostname: webhookUrl.hostname,
-                path: webhookUrl.pathname + webhookUrl.search,
-                method: 'POST',
-                headers: {
-                    'Content-Type': `multipart/form-data; boundary=${boundary}`,
-                    'Content-Length': payload.length
-                }
-            }, (res) => {
-                let data = '';
-                res.on('data', d => data += d);
-                res.on('end', () => { console.log(`Discord保存: ${filename} status=${res.statusCode} body=${data}`); resolve(); });
-            });
-            req.on('error', (e) => { console.error('Discord送信エラー:', e); resolve(); });
-            req.write(payload);
-            req.end();
-        });
+        console.log(`Discord送信開始: ${filename}`);
+        const form = new FormData();
+        form.append('content', `📄 ${label}`);
+        form.append('files[0]', fs.createReadStream(pdfPath), { filename, contentType: 'application/pdf' });
+        const resp = await axios.post(DISCORD_WEBHOOK_URL, form, { headers: form.getHeaders() });
+        console.log(`Discord保存完了: ${filename} status=${resp.status}`);
     } catch (e) {
-        console.error('Discord PDF送信例外:', e);
+        console.error('Discord PDF送信エラー:', e.response ? JSON.stringify(e.response.data) : e.message);
     }
 }
 
